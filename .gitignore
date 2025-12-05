@@ -1,0 +1,74 @@
+# Dependencies
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Hardhat
+artifacts/
+cache/
+coverage/
+typechain-types/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+
+# Backend specific
+backend/dist/
+backend/build/
+
+# Frontend specific
+frontend/dist/
+frontend/build/
+frontend/.nuxt/
+
+# Contracts specific
+contracts/artifacts/
+contracts/cache/
+contracts/typechain/
+
+# Shared specific
+shared/dist/
+shared/build/
+
+# Root level artifacts
+artifacts/
+cache/
