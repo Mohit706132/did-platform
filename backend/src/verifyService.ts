@@ -3,8 +3,9 @@ import { importJWK, jwtVerify } from "jose";
 import type { VerifiableCredential } from "shared";
 import { getIssuerKeys } from "./issuerKey";
 import { isCredentialRevoked } from "./didRegistryClient";
-
-const ISSUER_DID = "did:mychain:issuer-demo-1";
+import { ISSUER_DID } from "./config"; // Fix Bug #16: Centralized config
+import { logger } from "./utils/logger"; // Fix Bug #20: Error logging
+import { validateCredentialDates } from "./utils/validation"; // Fix Bug #18: Date validation
 
 export interface VerificationResult {
   valid: boolean;
@@ -24,6 +25,12 @@ export async function verifyCredential(
 
     if (!subjectDid) {
       return { valid: false, reason: "Credential subject id is missing" };
+    }
+
+    // Bug #18: Validate credential dates
+    const dateValidation = validateCredentialDates(vc);
+    if (!dateValidation.valid) {
+      return { valid: false, reason: dateValidation.reason };
     }
 
     // Get issuer public key from our in-memory key store
@@ -68,9 +75,18 @@ export async function verifyCredential(
       }
     }
 
+    // Bug #20: Log successful verification
+    logger.info(`Credential verified successfully`, {
+      credentialId: vc.id,
+      issuer: vc.issuer,
+      subject: subjectDid,
+    });
+
     return { valid: true };
   } catch (err: any) {
-    console.error("Verification error:", err);
-    return { valid: false, reason: err?.message ?? "Unknown verification error" };
+    // Bug #20: Replace console.error with logger
+    const errorId = logger.error(`Verification error`, undefined, err);
+    return { valid: false, reason: `Verification failed (${errorId})` };
   }
 }
+

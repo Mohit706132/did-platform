@@ -2,9 +2,10 @@ import { SignJWT } from "jose";
 import { randomUUID } from "crypto";
 import { getIssuerKeys } from "./issuerKey";
 import type { VerifiableCredential, Proof } from "shared";
+import { ISSUER_DID } from "./config"; // Fix Bug #16: Centralized config
+import { logger } from "./utils/logger"; // Fix Bug #20: Error logging
 
 const CREDENTIAL_CONTEXT = "https://www.w3.org/2018/credentials/v1";
-const ISSUER_DID = process.env.ISSUER_DID || "did:mychain:issuer-demo-1";
 
 
 export interface IssueCredentialRequest {
@@ -12,17 +13,19 @@ export interface IssueCredentialRequest {
   claims: Record<string, any>;
   expirationDate?: string; // ISO
   type?: string[];         // additional types
+  metadata?: Record<string, any>; // Bug #23: Add metadata support
 }
 
 export async function issueCredential(
   req: IssueCredentialRequest
 ): Promise<VerifiableCredential> {
-  const { subjectDid, claims, expirationDate, type } = req;
+  const { subjectDid, claims, expirationDate, type, metadata = {} } = req;
   const now = new Date();
   const issuanceDate = now.toISOString();
 
   const credentialId = `urn:uuid:${randomUUID()}`;
 
+  // Bug #23: Include metadata in credential structure
   const vc: VerifiableCredential = {
     "@context": [CREDENTIAL_CONTEXT],
     id: credentialId,
@@ -33,6 +36,14 @@ export async function issueCredential(
     credentialSubject: {
       id: subjectDid,
       ...claims
+    },
+    metadata: {
+      purpose: metadata.purpose || "general",
+      credentialType: metadata.credentialType || "VerifiableCredential",
+      tags: metadata.tags || [],
+      customData: metadata.customData || {},
+      createdAt: issuanceDate,
+      issuedBy: ISSUER_DID,
     }
   };
 
@@ -54,6 +65,14 @@ export async function issueCredential(
     .setIssuer(ISSUER_DID)
     .setSubject(subjectDid)
     .sign(privateKey);
+
+  // Bug #20: Log successful issuance with context
+  logger.info(`Credential issued successfully`, {
+    credentialId,
+    issuer: ISSUER_DID,
+    subject: subjectDid,
+    purpose: metadata.purpose || "general",
+  });
 
   const proof: Proof = {
     type: "JsonWebSignature2020",

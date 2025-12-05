@@ -12,24 +12,45 @@ import { issueCredential } from "./issuerService";
 import { verifyCredential } from "./verifyService";
 import type { VerifiableCredential } from "shared";
 import { revokeCredential } from "./didRegistryClient";
-
+import { logger } from "./utils/logger"; // Bug #20: Error logging
+import { validateIssueRequest, validateRevokeRequest, validateCredentialStructure } from "./utils/validation"; // Bugs #13, #17, #18
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Bug #17: Content-Type validation middleware
+app.use((req, res, next) => {
+  if (req.method === "POST") {
+    const contentType = req.headers["content-type"];
+    if (!contentType || !contentType.includes("application/json")) {
+      const errorId = logger.error(
+        `Invalid Content-Type: ${contentType}`,
+        req.path,
+        new Error("Content-Type must be application/json")
+      );
+      return res.status(415).json({ error: "Unsupported Media Type", errorId });
+    }
+  }
+  next();
+});
+
 // Revoke a credential on-chain
 app.post("/revoke", async (req, res) => {
   try {
-    const { credentialId } = req.body;
-    if (!credentialId || typeof credentialId !== "string") {
-      return res.status(400).json({ error: "credentialId (string) is required" });
+    // Bug #13, #17: Validate input
+    const validation = validateRevokeRequest(req.body);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.errors });
     }
 
+    const { credentialId } = req.body;
     await revokeCredential(credentialId);
+    logger.info(`Credential revoked successfully`, { credentialId });
     res.json({ status: "revoked" });
   } catch (err: any) {
-    console.error("Error revoking credential:", err);
-    res.status(500).json({ error: "Internal error", details: err?.message });
+    // Bug #20: Use logger instead of console.error
+    const errorId = logger.error("Error revoking credential", "/revoke", err);
+    res.status(500).json({ error: "Internal error", errorId });
   }
 });
 
@@ -45,49 +66,52 @@ app.get("/health", (_req, res) => {
 // Issue a credential
 app.post("/issue", async (req, res) => {
   try {
-    const { subjectDid, claims, expirationDate, type } = req.body;
+    // Bug #13, #17: Validate input
+    const validation = validateIssueRequest(req.body);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.errors });
+    }
 
-    if (!subjectDid || typeof subjectDid !== "string") {
-      return res.status(400).json({ error: "subjectDid (string) is required" });
-    }
-    if (!claims || typeof claims !== "object") {
-      return res.status(400).json({ error: "claims (object) is required" });
-    }
+    const { subjectDid, claims, expirationDate, type, metadata } = validation.data!;
 
     const vc = await issueCredential({
       subjectDid,
       claims,
       expirationDate,
-      type
+      type,
+      metadata
     });
 
     res.json(vc);
   } catch (err: any) {
-    console.error("Error issuing credential:", err);
-    res.status(500).json({ error: "Internal error", details: err?.message });
+    // Bug #20: Use logger instead of console.error
+    const errorId = logger.error("Error issuing credential", "/issue", err);
+    res.status(500).json({ error: "Internal error", errorId });
   }
 });
 
 // Verify a credential (privacy-first: we do not store it)
 app.post("/verify", async (req, res) => {
   try {
-    const vc = req.body as VerifiableCredential;
-
-    if (!vc || typeof vc !== "object") {
-      return res.status(400).json({ error: "Credential JSON is required in body" });
+    // Bug #13, #17: Validate credential structure
+    const validation = validateCredentialStructure(req.body);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.errors });
     }
 
+    const vc = req.body as VerifiableCredential;
     const result = await verifyCredential(vc);
 
     // Privacy-first: do NOT store full VC or credentialSubject
-    // You could log minimal metadata here if you want, but for now we just return result.
     res.json(result);
   } catch (err: any) {
-    console.error("Error verifying credential:", err);
-    res.status(500).json({ error: "Internal error", details: err?.message });
+    // Bug #20: Use logger instead of console.error
+    const errorId = logger.error("Error verifying credential", "/verify", err);
+    res.status(500).json({ error: "Internal error", errorId });
   }
 });
 
 app.listen(PORT, () => {
   console.log(`Issuer + Verifier backend listening on http://localhost:${PORT}`);
 });
+

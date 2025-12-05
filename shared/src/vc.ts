@@ -21,6 +21,15 @@ export interface VerifiableCredential {
     id?: DID | URI;
     [key: string]: any;   // e.g. name, studentId, role, etc.
   };
+  // Bug #23: Add metadata support for credential tracking
+  metadata?: {
+    purpose?: string;
+    credentialType?: string;
+    tags?: string[];
+    customData?: Record<string, any>;
+    createdAt?: string;
+    issuedBy?: string;
+  };
   proof?: Proof;
 }
 
