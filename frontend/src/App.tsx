@@ -12,6 +12,14 @@ interface User {
   lastName: string;
 }
 
+interface CredentialField {
+  name: string;
+  label: string;
+  type: string;
+  placeholder?: string;
+  options?: string[];
+}
+
 function App() {
   // Auth
   const [isAuth, setIsAuth] = useState(false);
@@ -30,13 +38,107 @@ function App() {
   const [did, setDid] = useState("");
   
   // UI
-  const [view, setView] = useState<'dashboard' | 'credentials' | 'verify'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'credentials' | 'verify' | 'issue'>('dashboard');
   const [credentials, setCredentials] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{ type: string, msg: string } | null>(null);
   const [modal, setModal] = useState<any>(null);
   const [verifyInput, setVerifyInput] = useState("");
   const [verifyResult, setVerifyResult] = useState<any>(null);
+  
+  // Issue credential state
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [credentialForm, setCredentialForm] = useState<Record<string, any>>({});
+  
+  // Share credential state
+  const [shareModal, setShareModal] = useState<any>(null);
+  const [selectedFields, setSelectedFields] = useState<string[]>([]);
+
+  // Credential templates
+  const credentialTemplates = {
+    aadhar: {
+      name: '🆔 Aadhar Card',
+      type: 'AadharCredential',
+      fields: [
+        { name: 'aadharNumber', label: 'Aadhar Number', type: 'text', placeholder: '1234 5678 9012' },
+        { name: 'fullName', label: 'Full Name', type: 'text', placeholder: 'As per Aadhar' },
+        { name: 'dateOfBirth', label: 'Date of Birth', type: 'date' },
+        { name: 'gender', label: 'Gender', type: 'select', options: ['Male', 'Female', 'Other'] },
+        { name: 'address', label: 'Address', type: 'textarea', placeholder: 'Full address' },
+        { name: 'pincode', label: 'Pincode', type: 'text', placeholder: '400001' },
+      ]
+    },
+    pan: {
+      name: '💳 PAN Card',
+      type: 'PANCredential',
+      fields: [
+        { name: 'panNumber', label: 'PAN Number', type: 'text', placeholder: 'ABCDE1234F' },
+        { name: 'fullName', label: 'Full Name', type: 'text', placeholder: 'As per PAN' },
+        { name: 'dateOfBirth', label: 'Date of Birth', type: 'date' },
+        { name: 'fatherName', label: 'Father Name', type: 'text' },
+      ]
+    },
+    drivingLicense: {
+      name: '🚗 Driving License',
+      type: 'DrivingLicenseCredential',
+      fields: [
+        { name: 'licenseNumber', label: 'License Number', type: 'text', placeholder: 'DL-1420110012345' },
+        { name: 'fullName', label: 'Full Name', type: 'text' },
+        { name: 'dateOfBirth', label: 'Date of Birth', type: 'date' },
+        { name: 'issueDate', label: 'Issue Date', type: 'date' },
+        { name: 'expiryDate', label: 'Expiry Date', type: 'date' },
+        { name: 'vehicleClasses', label: 'Vehicle Classes', type: 'text', placeholder: 'LMV, MCWG' },
+        { name: 'bloodGroup', label: 'Blood Group', type: 'select', options: ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'] },
+      ]
+    },
+    education: {
+      name: '🎓 Education Certificate',
+      type: 'EducationCredential',
+      fields: [
+        { name: 'certificateNumber', label: 'Certificate Number', type: 'text' },
+        { name: 'studentName', label: 'Student Name', type: 'text' },
+        { name: 'degree', label: 'Degree/Course', type: 'text', placeholder: 'B.Tech Computer Science' },
+        { name: 'institution', label: 'Institution', type: 'text', placeholder: 'University Name' },
+        { name: 'yearOfPassing', label: 'Year of Passing', type: 'text', placeholder: '2024' },
+        { name: 'grade', label: 'Grade/CGPA', type: 'text', placeholder: '8.5 CGPA' },
+        { name: 'specialization', label: 'Specialization', type: 'text' },
+      ]
+    },
+    employment: {
+      name: '💼 Employment Certificate',
+      type: 'EmploymentCredential',
+      fields: [
+        { name: 'employeeId', label: 'Employee ID', type: 'text' },
+        { name: 'fullName', label: 'Full Name', type: 'text' },
+        { name: 'designation', label: 'Designation', type: 'text', placeholder: 'Software Engineer' },
+        { name: 'department', label: 'Department', type: 'text' },
+        { name: 'joiningDate', label: 'Joining Date', type: 'date' },
+        { name: 'salary', label: 'Salary (Annual)', type: 'text', placeholder: '12,00,000' },
+        { name: 'companyName', label: 'Company Name', type: 'text' },
+      ]
+    },
+    voter: {
+      name: '🗳️ Voter ID',
+      type: 'VoterIDCredential',
+      fields: [
+        { name: 'voterId', label: 'Voter ID Number', type: 'text', placeholder: 'ABC1234567' },
+        { name: 'fullName', label: 'Full Name', type: 'text' },
+        { name: 'dateOfBirth', label: 'Date of Birth', type: 'date' },
+        { name: 'gender', label: 'Gender', type: 'select', options: ['Male', 'Female', 'Other'] },
+        { name: 'constituency', label: 'Constituency', type: 'text' },
+        { name: 'state', label: 'State', type: 'text' },
+      ]
+    },
+    other: {
+      name: '📄 Other Document',
+      type: 'OtherCredential',
+      fields: [
+        { name: 'documentName', label: 'Name on Document', type: 'text', placeholder: 'John Doe' },
+        { name: 'uniqueId', label: 'Unique ID', type: 'text', placeholder: 'DOC123456789' },
+        { name: 'age', label: 'Age', type: 'number', placeholder: '25' },
+      ]
+    },
+  };
 
   useEffect(() => {
     const saved = localStorage.getItem("session");
@@ -136,8 +238,19 @@ function App() {
     } catch (e) {}
   };
 
+  const handleFormChange = (field: string, value: any) => {
+    setCredentialForm(prev => ({ ...prev, [field]: value }));
+  };
+
   const issueCred = async () => {
     if (!did && !wallet) return msg('error', 'Connect wallet first');
+    if (!selectedTemplate) return msg('error', 'Select a credential type');
+
+    const template = credentialTemplates[selectedTemplate as keyof typeof credentialTemplates];
+    const missingFields = template.fields.filter(f => !credentialForm[f.name]);
+    if (missingFields.length > 0) {
+      return msg('error', `Please fill: ${missingFields[0].label}`);
+    }
 
     try {
       setLoading(true);
@@ -146,23 +259,97 @@ function App() {
         headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId },
         body: JSON.stringify({
           subjectDid: did || `${DID_METHOD_PREFIX}${wallet}`,
-          claims: {
-            name: `${user?.firstName} ${user?.lastName}`,
-            email: user?.email,
-            role: "Student"
-          },
-          type: ["VerifiableCredential", "EducationCredential"]
+          claims: credentialForm,
+          type: ["VerifiableCredential", template.type],
+          metadata: {
+            credentialType: template.type,
+            purpose: 'identity-verification'
+          }
         })
       });
 
       if (!res.ok) throw new Error('Issue failed');
-      msg('success', 'Credential issued!');
+      msg('success', `${template.name} issued successfully!`);
+      setSelectedTemplate('');
+      setCredentialForm({});
+      setView('credentials');
       loadCreds(sessionId);
     } catch (e: any) {
       msg('error', e.message);
     } finally {
       setLoading(false);
     }
+  };
+
+  const shareCredential = (cred: any) => {
+    setShareModal(cred);
+    setSelectedFields([]);
+  };
+
+  const toggleField = (field: string) => {
+    setSelectedFields(prev => 
+      prev.includes(field) ? prev.filter(f => f !== field) : [...prev, field]
+    );
+  };
+
+  const generateShareableCredential = () => {
+    if (!shareModal || selectedFields.length === 0) {
+      return msg('error', 'Select at least one field to share');
+    }
+
+    const fullCred = shareModal.credentialData;
+    const filteredClaims = Object.keys(fullCred.credentialSubject)
+      .filter(key => key === 'id' || selectedFields.includes(key))
+      .reduce((obj: any, key) => {
+        obj[key] = fullCred.credentialSubject[key];
+        return obj;
+      }, {});
+
+    const shareableCred = {
+      ...fullCred,
+      credentialSubject: filteredClaims,
+      metadata: {
+        ...fullCred.metadata,
+        sharedFields: selectedFields,
+        sharedAt: new Date().toISOString()
+      }
+    };
+
+    setVerifyInput(JSON.stringify(shareableCred, null, 2));
+    setView('verify');
+    setShareModal(null);
+    setSelectedFields([]);
+    msg('info', 'Credential prepared for sharing with selected fields only');
+  };
+
+  const deleteCredential = async (credentialId: string) => {
+    if (!confirm('Are you sure you want to delete this credential?')) return;
+
+    try {
+      setLoading(true);
+      const res = await fetch(BACKEND_URL + `/api/credentials/${credentialId}/revoke`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-session-id': sessionId },
+        body: JSON.stringify({ reason: 'Deleted by user' })
+      });
+
+      if (!res.ok) throw new Error('Delete failed');
+      msg('success', 'Credential deleted successfully!');
+      loadCreds(sessionId);
+    } catch (e: any) {
+      msg('error', e.message || 'Failed to delete credential');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getCredentialTitle = (cred: any) => {
+    const type = cred.credentialData?.type?.[1];
+    if (!type) return 'Verifiable Credential';
+    
+    // Match the type to template name
+    const template = Object.values(credentialTemplates).find(t => t.type === type);
+    return template ? template.name : type.replace(/Credential$/, '').replace(/([A-Z])/g, ' $1').trim();
   };
 
   const verifyCred = async () => {
@@ -242,6 +429,7 @@ function App() {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div className="button-group">
             <button className={`btn ${view === 'dashboard' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setView('dashboard')}>🏠 Dashboard</button>
+            <button className={`btn ${view === 'issue' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setView('issue')}>➕ Issue</button>
             <button className={`btn ${view === 'credentials' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setView('credentials')}>📋 Credentials</button>
             <button className={`btn ${view === 'verify' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setView('verify')}>✅ Verify</button>
           </div>
@@ -290,11 +478,76 @@ function App() {
             <h2>🚀 Quick Actions</h2>
             <div className="button-group">
               {!wallet && <button className="btn btn-primary" onClick={connectWallet} disabled={loading}>🔗 Connect Wallet</button>}
-              <button className="btn btn-success" onClick={issueCred} disabled={loading || !wallet}>📜 Issue Credential</button>
-              <button className="btn btn-secondary" onClick={() => setView('credentials')}>📋 View All</button>
+              <button className="btn btn-success" onClick={() => setView('issue')} disabled={!wallet}>➕ Issue New Credential</button>
+              <button className="btn btn-secondary" onClick={() => setView('credentials')}>📋 View All Credentials</button>
             </div>
           </div>
         </>
+      )}
+
+      {view === 'issue' && (
+        <div className="card">
+          <h2>➕ Issue New Credential</h2>
+          
+          {!selectedTemplate ? (
+            <>
+              <p>Select the type of credential you want to issue:</p>
+              <div className="credentials-list" style={{ marginTop: '1.5rem' }}>
+                {Object.entries(credentialTemplates).map(([key, template]) => (
+                  <div key={key} className="credential-item" style={{ cursor: 'pointer' }} onClick={() => setSelectedTemplate(key)}>
+                    <div className="credential-header">
+                      <div className="credential-title">{template.name}</div>
+                      <span style={{ fontSize: '1.5rem' }}>→</span>
+                    </div>
+                    <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
+                      {template.fields.length} fields required
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+                <h3>{credentialTemplates[selectedTemplate as keyof typeof credentialTemplates].name}</h3>
+                <button className="btn btn-secondary" onClick={() => { setSelectedTemplate(''); setCredentialForm({}); }}>← Back</button>
+              </div>
+              
+              {credentialTemplates[selectedTemplate as keyof typeof credentialTemplates].fields.map((field) => (
+                <div key={field.name} className="form-group">
+                  <label>{field.label}</label>
+                  {field.type === 'textarea' ? (
+                    <textarea
+                      value={credentialForm[field.name] || ''}
+                      onChange={(e) => handleFormChange(field.name, e.target.value)}
+                      placeholder={field.placeholder}
+                    />
+                  ) : field.type === 'select' ? (
+                    <select
+                      value={credentialForm[field.name] || ''}
+                      onChange={(e) => handleFormChange(field.name, e.target.value)}
+                    >
+                      <option value="">Select {field.label}</option>
+                      {'options' in field && field.options?.map((opt: string) => <option key={opt} value={opt}>{opt}</option>)}
+                    </select>
+                  ) : (
+                    <input
+                      type={field.type}
+                      value={credentialForm[field.name] || ''}
+                      onChange={(e) => handleFormChange(field.name, e.target.value)}
+                      placeholder={field.placeholder}
+                    />
+                  )}
+                </div>
+              ))}
+              
+              <button className="btn btn-success btn-full" onClick={issueCred} disabled={loading}>
+                {loading && <span className="loading"></span>}
+                Issue Credential
+              </button>
+            </>
+          )}
+        </div>
       )}
 
       {view === 'credentials' && (
@@ -311,7 +564,7 @@ function App() {
               {credentials.map(c => (
                 <div key={c.credentialId} className="credential-item">
                   <div className="credential-header">
-                    <div className="credential-title">{c.credentialData?.type?.[1] || 'Verifiable Credential'}</div>
+                    <div className="credential-title">{getCredentialTitle(c)}</div>
                     <span className={`credential-status ${c.status.toLowerCase()}`}>{c.status}</span>
                   </div>
                   <div className="credential-meta">
@@ -320,7 +573,13 @@ function App() {
                       <div className="credential-meta-value">{new Date(c.issuedAt).toLocaleDateString()}</div>
                     </div>
                   </div>
-                  <button className="btn btn-secondary" onClick={() => setModal(c)} style={{ marginTop: '1rem' }}>View Details</button>
+                  <div className="button-group" style={{ marginTop: '1rem' }}>
+                    <button className="btn btn-secondary" onClick={() => setModal(c)}>View Details</button>
+                    {c.status === 'ACTIVE' && (
+                      <button className="btn btn-primary" onClick={() => shareCredential(c)}>📤 Share</button>
+                    )}
+                    <button className="btn btn-danger" onClick={() => deleteCredential(c.credentialId)}>🗑️ Delete</button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -353,6 +612,73 @@ function App() {
               <button className="modal-close" onClick={() => setModal(null)}>×</button>
             </div>
             <pre>{JSON.stringify(modal, null, 2)}</pre>
+          </div>
+        </div>
+      )}
+
+      {shareModal && (
+        <div className="modal-overlay" onClick={() => setShareModal(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">📤 Share Credential - Select Fields</h3>
+              <button className="modal-close" onClick={() => setShareModal(null)}>×</button>
+            </div>
+            <p style={{ marginBottom: '1.5rem', color: 'var(--text-secondary)' }}>
+              Select only the fields you want to share with the verifier. This ensures privacy by revealing only necessary information.
+            </p>
+            
+            <div style={{ marginBottom: '1.5rem' }}>
+              {Object.keys(shareModal.credentialData?.credentialSubject || {}).filter(key => key !== 'id').map(field => (
+                <div key={field} style={{ 
+                  padding: '0.75rem', 
+                  marginBottom: '0.5rem', 
+                  background: 'var(--bg-secondary)', 
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  border: selectedFields.includes(field) ? '2px solid var(--primary)' : '2px solid transparent',
+                  transition: 'all 0.2s ease'
+                }} onClick={() => toggleField(field)}>
+                  <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={selectedFields.includes(field)}
+                      onChange={() => toggleField(field)}
+                      style={{ width: '18px', height: '18px' }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: '600', textTransform: 'capitalize' }}>{field.replace(/([A-Z])/g, ' $1')}</div>
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                        {shareModal.credentialData.credentialSubject[field]}
+                      </div>
+                    </div>
+                  </label>
+                </div>
+              ))}
+            </div>
+
+            <div className="button-group">
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => setSelectedFields(Object.keys(shareModal.credentialData?.credentialSubject || {}).filter(k => k !== 'id'))}
+              >
+                Select All
+              </button>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => setSelectedFields([])}
+              >
+                Clear All
+              </button>
+            </div>
+
+            <button 
+              className="btn btn-success btn-full" 
+              onClick={generateShareableCredential}
+              disabled={selectedFields.length === 0}
+              style={{ marginTop: '1rem' }}
+            >
+              Generate Shareable Credential ({selectedFields.length} fields)
+            </button>
           </div>
         </div>
       )}
