@@ -6,6 +6,7 @@ import { isCredentialRevoked } from "./didRegistryClient";
 import { ISSUER_DID } from "./config"; // Fix Bug #16: Centralized config
 import { logger } from "./utils/logger"; // Fix Bug #20: Error logging
 import { validateCredentialDates } from "./utils/validation"; // Fix Bug #18: Date validation
+import { auditLogger } from "./utils/auditLog"; // Fix Bug #19: Audit logging
 
 export interface VerificationResult {
   valid: boolean;
@@ -82,10 +83,15 @@ export async function verifyCredential(
       subject: subjectDid,
     });
 
+    // Bug #19: Audit logging for credential verification
+    auditLogger.logVerifyCredential(vc.id, subjectDid, true);
+
     return { valid: true };
   } catch (err: any) {
     // Bug #20: Replace console.error with logger
     const errorId = logger.error(`Verification error`, undefined, err);
+    // Bug #19: Audit logging for failed verification
+    auditLogger.logVerifyCredential(vc?.id, undefined, false, err?.message);
     return { valid: false, reason: `Verification failed (${errorId})` };
   }
 }

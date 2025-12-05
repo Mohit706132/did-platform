@@ -1,0 +1,155 @@
+### DID Platform Backend - API Tests
+### Base URL
+@baseUrl = http://localhost:4000
+@sessionId = 
+
+### 1. Health Check
+GET {{baseUrl}}/health
+
+### 2. Register User
+POST {{baseUrl}}/api/auth/register
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "Test@1234",
+  "firstName": "John",
+  "lastName": "Doe"
+}
+
+### 3. Login User
+POST {{baseUrl}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "test@example.com",
+  "password": "Test@1234"
+}
+
+### 4. Get Wallet Challenge (requires session ID from login)
+POST {{baseUrl}}/api/auth/wallet/challenge
+Content-Type: application/json
+x-session-id: {{sessionId}}
+
+{
+  "walletAddress": "0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb"
+}
+
+### 5. Verify Wallet (requires signature from MetaMask)
+POST {{baseUrl}}/api/auth/wallet/verify
+Content-Type: application/json
+x-session-id: {{sessionId}}
+
+{
+  "challengeId": "challenge-id-here",
+  "signature": "0x..."
+}
+
+### 6. Issue Credential (requires session)
+POST {{baseUrl}}/api/credentials/issue
+Content-Type: application/json
+x-session-id: {{sessionId}}
+
+{
+  "subjectDid": "did:mychain:holder-123",
+  "claims": {
+    "name": "John Doe",
+    "age": 25,
+    "degree": "Computer Science"
+  },
+  "expirationDate": "2026-12-31T23:59:59Z",
+  "type": ["VerifiableCredential", "EducationCredential"]
+}
+
+### 7. Get All Credentials (requires session)
+GET {{baseUrl}}/api/credentials?page=1&limit=10
+x-session-id: {{sessionId}}
+
+### 8. Get Single Credential (requires session)
+GET {{baseUrl}}/api/credentials/credential-id-here
+x-session-id: {{sessionId}}
+
+### 9. Verify Credential (requires session)
+POST {{baseUrl}}/api/credentials/verify
+Content-Type: application/json
+x-session-id: {{sessionId}}
+
+{
+  "@context": ["https://www.w3.org/2018/credentials/v1"],
+  "id": "urn:uuid:...",
+  "type": ["VerifiableCredential"],
+  "issuer": "did:mychain:issuer-demo-1",
+  "issuanceDate": "2025-12-06T...",
+  "credentialSubject": {
+    "id": "did:mychain:holder-123",
+    "name": "John Doe"
+  },
+  "proof": {
+    "type": "JsonWebSignature2020",
+    "created": "2025-12-06T...",
+    "verificationMethod": "did:mychain:issuer-demo-1#key-1",
+    "proofPurpose": "assertionMethod",
+    "jws": "..."
+  }
+}
+
+### 10. Revoke Credential (requires session)
+POST {{baseUrl}}/api/credentials/credential-id-here/revoke
+Content-Type: application/json
+x-session-id: {{sessionId}}
+
+{
+  "reason": "Invalid credential"
+}
+
+### 11. Get Credential Usage Log (requires session)
+GET {{baseUrl}}/api/credentials/credential-id-here/usage-log
+x-session-id: {{sessionId}}
+
+### 12. Logout (requires session)
+POST {{baseUrl}}/api/auth/logout
+Content-Type: application/json
+x-session-id: {{sessionId}}
+
+{}
+
+### Legacy Endpoints (backward compatibility)
+
+### 13. Legacy Issue Credential
+POST {{baseUrl}}/issue
+Content-Type: application/json
+
+{
+  "subjectDid": "did:mychain:holder-456",
+  "claims": {
+    "name": "Jane Smith",
+    "role": "Developer"
+  }
+}
+
+### 14. Legacy Verify Credential
+POST {{baseUrl}}/verify
+Content-Type: application/json
+
+{
+  "@context": ["https://www.w3.org/2018/credentials/v1"],
+  "id": "urn:uuid:...",
+  "type": ["VerifiableCredential"],
+  "issuer": "did:mychain:issuer-demo-1",
+  "issuanceDate": "2025-12-06T...",
+  "credentialSubject": {
+    "id": "did:mychain:holder-456"
+  },
+  "proof": {
+    "type": "JsonWebSignature2020",
+    "jws": "..."
+  }
+}
+
+### 15. Legacy Revoke Credential
+POST {{baseUrl}}/revoke
+Content-Type: application/json
+
+{
+  "credentialId": "credential-id-here"
+}

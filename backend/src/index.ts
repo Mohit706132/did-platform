@@ -13,14 +13,23 @@ import { verifyCredential } from "./verifyService";
 import type { VerifiableCredential } from "shared";
 import { revokeCredential } from "./didRegistryClient";
 import { logger } from "./utils/logger"; // Bug #20: Error logging
+import { auditLogger } from "./utils/auditLog"; // Bug #19: Audit logging
 import { validateIssueRequest, validateRevokeRequest, validateCredentialStructure } from "./utils/validation"; // Bugs #13, #17, #18
+import { connectDatabase } from "./database"; // MongoDB connection
+import authRoutes from "./routes/auth";
+import credentialRoutes from "./routes/credentials";
 
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.BACKEND_PORT || process.env.PORT || 4000;
 
-// Bug #17: Content-Type validation middleware
+// CORS middleware
+app.use(cors());
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
+
+// Bug #17: Content-Type validation middleware for POST requests
 app.use((req, res, next) => {
-  if (req.method === "POST") {
+  if (req.method === "POST" && req.body) {
     const contentType = req.headers["content-type"];
     if (!contentType || !contentType.includes("application/json")) {
       const errorId = logger.error(
@@ -34,6 +43,20 @@ app.use((req, res, next) => {
   next();
 });
 
+// Health check
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
+});
+
+// ===== API ROUTES =====
+// Authentication routes (new)
+app.use("/api/auth", authRoutes);
+
+// Credential routes (new)
+app.use("/api/credentials", credentialRoutes);
+
+// ===== LEGACY ROUTES (Kept for backward compatibility) =====
+
 // Revoke a credential on-chain
 app.post("/revoke", async (req, res) => {
   try {
@@ -46,21 +69,16 @@ app.post("/revoke", async (req, res) => {
     const { credentialId } = req.body;
     await revokeCredential(credentialId);
     logger.info(`Credential revoked successfully`, { credentialId });
+    // Bug #19: Audit logging for credential revocation
+    auditLogger.logRevokeCredential(credentialId);
     res.json({ status: "revoked" });
   } catch (err: any) {
     // Bug #20: Use logger instead of console.error
     const errorId = logger.error("Error revoking credential", "/revoke", err);
+    // Bug #19: Audit logging for failed revocation
+    auditLogger.logRevokeCredential(req.body?.credentialId, undefined, err?.message);
     res.status(500).json({ error: "Internal error", errorId });
   }
-});
-
-
-app.use(cors());
-app.use(bodyParser.json());
-
-// Health check
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok" });
 });
 
 // Issue a credential
@@ -79,7 +97,7 @@ app.post("/issue", async (req, res) => {
       claims,
       expirationDate,
       type,
-      metadata
+      metadata: metadata || {}
     });
 
     res.json(vc);
@@ -111,7 +129,38 @@ app.post("/verify", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Issuer + Verifier backend listening on http://localhost:${PORT}`);
+// Error handling middleware
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const errorId = logger.error("Unhandled error", req.path, err);
+  res.status(err.status || 500).json({
+    error: err.message || "Internal server error",
+    errorId,
+  });
 });
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    error: `Route not found: ${req.method} ${req.path}`,
+  });
+});
+
+// Connect to database and start server
+async function startServer() {
+  try {
+    await connectDatabase();
+    app.listen(PORT, () => {
+      console.log(`✅ DID Platform backend running on http://localhost:${PORT}`);
+      console.log(`📚 API docs:`);
+      console.log(`   Auth: POST /api/auth/register, /api/auth/login, /api/auth/wallet/challenge, /api/auth/wallet/verify`);
+      console.log(`   Credentials: POST /api/credentials/issue, /api/credentials/verify, GET /api/credentials`);
+    });
+  } catch (err) {
+    console.error("❌ Failed to start server:", err);
+    process.exit(1);
+  }
+}
+
+startServer();
+
 

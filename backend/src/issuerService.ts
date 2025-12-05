@@ -4,6 +4,7 @@ import { getIssuerKeys } from "./issuerKey";
 import type { VerifiableCredential, Proof } from "shared";
 import { ISSUER_DID } from "./config"; // Fix Bug #16: Centralized config
 import { logger } from "./utils/logger"; // Fix Bug #20: Error logging
+import { auditLogger } from "./utils/auditLog"; // Fix Bug #19: Audit logging
 
 const CREDENTIAL_CONTEXT = "https://www.w3.org/2018/credentials/v1";
 
@@ -26,26 +27,34 @@ export async function issueCredential(
   const credentialId = `urn:uuid:${randomUUID()}`;
 
   // Bug #23: Include metadata in credential structure
-  const vc: VerifiableCredential = {
+  const vcData: any = {
     "@context": [CREDENTIAL_CONTEXT],
     id: credentialId,
     type: ["VerifiableCredential", ...(type ?? ["BasicProfileCredential"])],
     issuer: ISSUER_DID,
     issuanceDate,
-    ...(expirationDate ? { expirationDate } : {}),
     credentialSubject: {
       id: subjectDid,
       ...claims
-    },
-    metadata: {
+    }
+  };
+
+  if (expirationDate) {
+    vcData.expirationDate = expirationDate;
+  }
+
+  if (metadata && Object.keys(metadata).length > 0) {
+    vcData.metadata = {
       purpose: metadata.purpose || "general",
       credentialType: metadata.credentialType || "VerifiableCredential",
       tags: metadata.tags || [],
       customData: metadata.customData || {},
       createdAt: issuanceDate,
       issuedBy: ISSUER_DID,
-    }
-  };
+    };
+  }
+
+  const vc: VerifiableCredential = vcData;
 
   const { privateKey, publicKeyJwk, kid } = await getIssuerKeys();
 
@@ -73,6 +82,17 @@ export async function issueCredential(
     subject: subjectDid,
     purpose: metadata.purpose || "general",
   });
+
+  // Bug #19: Audit logging for credential issuance
+  auditLogger.logIssueCredential(
+    subjectDid,
+    credentialId,
+    {
+      purpose: metadata.purpose,
+      type: type,
+      expirationDate,
+    }
+  );
 
   const proof: Proof = {
     type: "JsonWebSignature2020",
