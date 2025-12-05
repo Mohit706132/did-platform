@@ -1,9 +1,37 @@
 // backend/src/didRegistryClient.ts
 import { ethers } from "ethers";
+import * as fs from "fs";
+import * as path from "path";
 
 const RPC_URL = process.env.RPC_URL || "http://127.0.0.1:8545";
-const DID_REGISTRY_ADDRESS =
-  process.env.DID_REGISTRY_ADDRESS || "0x0000000000000000000000000000000000000000"; //your address here
+
+// Load contract address from contract-addresses.json or environment variable
+function getContractAddress(): string {
+  // First try to load from contract-addresses.json
+  try {
+    const addressFilePath = path.join(__dirname, "..", "contract-addresses.json");
+    if (fs.existsSync(addressFilePath)) {
+      const data = JSON.parse(fs.readFileSync(addressFilePath, "utf-8"));
+      console.log("✅ Loaded DID Registry address from contract-addresses.json:", data.registryAddress);
+      return data.registryAddress;
+    }
+  } catch (e) {
+    console.warn("⚠️ Could not load contract-addresses.json:", e);
+  }
+
+  // Fall back to environment variable
+  const envAddress = process.env.DID_REGISTRY_ADDRESS;
+  if (envAddress && envAddress !== "0x0000000000000000000000000000000000000000") {
+    console.log("✅ Using DID Registry address from .env:", envAddress);
+    return envAddress;
+  }
+
+  throw new Error(
+    "No valid DID_REGISTRY_ADDRESS found. Please ensure contract-addresses.json exists or set DID_REGISTRY_ADDRESS in .env"
+  );
+}
+
+const DID_REGISTRY_ADDRESS = getContractAddress();
 
 const DID_REGISTRY_ABI = [
   "function isCredentialRevoked(bytes32 credentialIdHash) external view returns (bool)",

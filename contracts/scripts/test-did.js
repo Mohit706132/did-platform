@@ -1,4 +1,6 @@
 const hre = require("hardhat");
+const fs = require("fs");
+const path = require("path");
 
 async function main() {
   const [user] = await hre.ethers.getSigners();
@@ -10,6 +12,24 @@ async function main() {
   await registry.waitForDeployment();
   const registryAddress = await registry.getAddress();
   console.log("DIDRegistry deployed at:", registryAddress);
+
+  // Save the contract address to a file that both frontend and backend can use
+  const addressData = {
+    registryAddress: registryAddress,
+    deployedAt: new Date().toISOString(),
+    network: "localhost",
+    chainId: 31337
+  };
+
+  // Save to backend config
+  const backendPath = path.join(__dirname, "../..", "backend", "contract-addresses.json");
+  fs.writeFileSync(backendPath, JSON.stringify(addressData, null, 2));
+  console.log("✅ Contract address saved to backend");
+
+  // Save to frontend config
+  const frontendPath = path.join(__dirname, "../..", "frontend", "contract-addresses.json");
+  fs.writeFileSync(frontendPath, JSON.stringify(addressData, null, 2));
+  console.log("✅ Contract address saved to frontend");
 
   const uri = "https://example.com/did/" + user.address;
   const tx = await registry.connect(user).registerDID(uri);

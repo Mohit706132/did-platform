@@ -1,5 +1,10 @@
 // backend/src/index.ts
-import "dotenv/config";
+import * as dotenv from "dotenv";
+import * as path from "path";
+
+// Load .env from root directory
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";

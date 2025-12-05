@@ -20,23 +20,58 @@ type NetworkConfig = {
   registryAddress: string;
 };
 
-// Map of supported networks → their registry addresses
-const NETWORKS: NetworkConfig[] = [
-  {
-    chainId: 31337, // Hardhat local node
-    name: "Hardhat Localhost",
-    registryAddress: import.meta.env.VITE_DID_REGISTRY_ADDRESS_LOCAL || ""
-  },
-  {
-    chainId: 11155111, // Sepolia (optional)
-    name: "Sepolia Testnet",
-    registryAddress: import.meta.env.VITE_DID_REGISTRY_ADDRESS_SEPOLIA || ""
-  }
-  // Add more networks here if needed
-];
+// Cache for contract addresses
+let contractAddressCache: string = "";
 
-function getNetworkConfig(chainId: number): NetworkConfig {
-  const cfg = NETWORKS.find((n) => n.chainId === chainId);
+// Load contract address from deployed file
+async function loadDeployedContractAddress(): Promise<string> {
+  if (contractAddressCache) {
+    return contractAddressCache;
+  }
+
+  try {
+    const response = await fetch("/contract-addresses.json");
+    if (response.ok) {
+      const data = await response.json();
+      contractAddressCache = data.registryAddress;
+      console.log("✅ Loaded contract address from file:", contractAddressCache);
+      return contractAddressCache;
+    }
+  } catch (e) {
+    console.warn("⚠️ Could not load contract-addresses.json, using default");
+  }
+
+  // Fallback to environment variable or default
+  contractAddressCache = import.meta.env.VITE_DID_REGISTRY_ADDRESS_LOCAL || "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0";
+  return contractAddressCache;
+}
+
+// Map of supported networks → their registry addresses
+async function getNETWORKS(): Promise<NetworkConfig[]> {
+  const defaultAddress = await loadDeployedContractAddress();
+  
+  return [
+    {
+      chainId: 31337, // Hardhat local node
+      name: "Hardhat Localhost",
+      registryAddress: defaultAddress
+    },
+    {
+      chainId: 1, // Ethereum Mainnet
+      name: "Ethereum Mainnet",
+      registryAddress: import.meta.env.VITE_DID_REGISTRY_ADDRESS_MAINNET || defaultAddress
+    },
+    {
+      chainId: 11155111, // Sepolia Testnet
+      name: "Sepolia Testnet",
+      registryAddress: import.meta.env.VITE_DID_REGISTRY_ADDRESS_SEPOLIA || defaultAddress
+    }
+  ];
+}
+
+async function getNetworkConfig(chainId: number): Promise<NetworkConfig> {
+  const networks = await getNETWORKS();
+  const cfg = networks.find((n) => n.chainId === chainId);
   if (!cfg) {
     throw new Error(`Unsupported network with chainId ${chainId}. Please configure it in NETWORKS.`);
   }
@@ -83,7 +118,7 @@ async function getRegistryWithSigner(): Promise<{
   const network = await signer.provider!.getNetwork();
   const chainId = Number(network.chainId); // ethers v6: chainId is bigint
 
-  const cfg = getNetworkConfig(chainId);
+  const cfg = await getNetworkConfig(chainId);
 
   const contract = new ethers.Contract(cfg.registryAddress, DID_REGISTRY_ABI, signer);
   return {
@@ -102,7 +137,7 @@ async function getRegistryReadOnly(): Promise<{
   const network = await provider.getNetwork();
   const chainId = Number(network.chainId);
 
-  const cfg = getNetworkConfig(chainId);
+  const cfg = await getNetworkConfig(chainId);
 
   const contract = new ethers.Contract(cfg.registryAddress, DID_REGISTRY_ABI, provider);
   return {
