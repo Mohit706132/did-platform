@@ -7,6 +7,30 @@ import { randomUUID } from 'crypto';
 
 const router = express.Router();
 
+// GET /api/issuer/list - Get all registered issuers (public endpoint)
+router.get('/list', async (_req: Request, res: Response) => {
+  try {
+    const issuers = await IssuerRegistry.find({ verificationStatus: { $ne: 'rejected' } })
+      .select('organizationName organizationType country authorizedCredentialTypes')
+      .sort({ organizationName: 1 })
+      .lean();
+
+    res.json({
+      success: true,
+      count: issuers.length,
+      issuers: issuers.map((issuer: any) => ({
+        organizationName: issuer.organizationName,
+        organizationType: issuer.organizationType,
+        country: issuer.country,
+        authorizedCredentialTypes: issuer.authorizedCredentialTypes || [],
+      })),
+    });
+  } catch (err: any) {
+    const errorId = logger.error('List issuers error', '/api/issuer/list', err);
+    res.status(500).json({ error: 'Internal error', errorId });
+  }
+});
+
 // Middleware to check if user is issuer
 async function requireIssuerRole(req: Request & { session?: ISession }, res: Response, next: any) {
   try {

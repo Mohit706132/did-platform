@@ -114,6 +114,7 @@ router.get('/', validateSession, async (req: Request & { session?: ISession }, r
     }
 
     const credentials = await Credential.find(query)
+      .populate('issuerId', 'email firstName lastName')
       .select('-credentialData.proof') // Exclude proof to reduce payload
       .limit(Number(limit))
       .skip(Number(skip))
@@ -121,9 +122,31 @@ router.get('/', validateSession, async (req: Request & { session?: ISession }, r
 
     const total = await Credential.countDocuments(query);
 
+    // Get issuer organization names for credentials
+    const { IssuerRegistry } = await import('../models');
+    const credentialsWithIssuerInfo = await Promise.all(
+      credentials.map(async (cred: any) => {
+        let issuerOrgName = cred.credentialData?.metadata?.issuerName || 'Unknown Issuer';
+        
+        // Try to get issuer organization name from IssuerRegistry
+        if (cred.issuerId?._id) {
+          const issuerProfile = await IssuerRegistry.findOne({ userId: cred.issuerId._id });
+          if (issuerProfile) {
+            issuerOrgName = issuerProfile.organizationName;
+          }
+        }
+        
+        return {
+          ...cred.toObject(),
+          issuerOrganizationName: issuerOrgName,
+          issuerName: issuerOrgName, // Add both for compatibility
+        };
+      })
+    );
+
     res.json({
       success: true,
-      credentials,
+      credentials: credentialsWithIssuerInfo,
       total,
       limit: Number(limit),
       skip: Number(skip),
@@ -134,30 +157,135 @@ router.get('/', validateSession, async (req: Request & { session?: ISession }, r
   }
 });
 
-// GET /api/credentials/:credentialId
-router.get('/:credentialId', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
+// GET /api/credentials/verification-requests - Get verification requests for holder
+// IMPORTANT: This must come BEFORE /:credentialId route
+router.get('/verification-requests', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
   try {
-    const { credentialId } = req.params;
-    const session = req.session!;
+    const { VerificationRequest, User } = await import('../models');
+    const userId = req.session!.userId;
 
-    const credential = await Credential.findOne({ credentialId });
-    if (!credential) {
-      return res.status(404).json({ error: 'Credential not found' });
-    }
+    const { status } = req.query;
+    const filter: any = {
+      holderId: userId,
+    };
 
-    // Check if user has access (owner or issuer)
-    if (credential.subjectId.toString() !== session.userId.toString() &&
-        credential.issuerId?.toString() !== session.userId.toString()) {
-      return res.status(403).json({ error: 'Unauthorized' });
-    }
+    if (status) filter.status = status;
+
+    const requests = await VerificationRequest.find(filter)
+      .populate('verifierId', 'email firstName lastName')
+      .sort({ createdAt: -1 })
+      .limit(50);
 
     res.json({
       success: true,
-      credential,
+      count: requests.length,
+      requests: requests.map((r: any) => ({
+        requestId: r.requestId,
+        verifierDid: r.verifierDid,
+        verifierEmail: r.verifierId?.email,
+        verifierName: r.verifierId ? `${r.verifierId.firstName} ${r.verifierId.lastName}` : 'Unknown Verifier',
+        requestedCredentialTypes: r.requestedCredentialTypes,
+        requestedFields: r.requestedFields,
+        purpose: r.purpose,
+        status: r.status,
+        expiresAt: r.expiresAt,
+        createdAt: r.createdAt,
+      })),
     });
   } catch (err: any) {
-    const errorId = logger.error('Fetch credential error', '/api/credentials/:credentialId', err);
-    res.status(500).json({ error: 'Internal server error', errorId });
+    const errorId = logger.error('Get verification requests error', '/api/credentials/verification-requests', err);
+    res.status(500).json({ error: 'Internal error', errorId });
+  }
+});
+
+// POST /api/credentials/respond-verification - Respond to verification request
+// IMPORTANT: This must come BEFORE /:credentialId route
+router.post('/respond-verification', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
+  try {
+    const { VerificationRequest } = await import('../models');
+    const { requestId, action, selectedCredentials } = req.body;
+
+    if (!requestId || !action) {
+      return res.status(400).json({ error: 'requestId and action required' });
+    }
+
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ error: 'action must be approve or reject' });
+    }
+
+    const userId = req.session!.userId;
+
+    const request = await VerificationRequest.findOne({ requestId });
+    if (!request) {
+      return res.status(404).json({ error: 'Verification request not found' });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({ error: `Request already ${request.status}` });
+    }
+
+    if (new Date() > request.expiresAt) {
+      request.status = 'expired';
+      await request.save();
+      return res.status(400).json({ error: 'Request expired' });
+    }
+
+    if (action === 'approve') {
+      if (!selectedCredentials || !Array.isArray(selectedCredentials)) {
+        return res.status(400).json({ error: 'selectedCredentials array required for approval' });
+      }
+
+      // Handle both formats: array of strings (credentialIds) or array of objects with credentialId
+      const credentialIds = selectedCredentials.map((c: any) => 
+        typeof c === 'string' ? c : c.credentialId
+      );
+
+      // Verify credentials belong to user
+      const credentials = await Credential.find({
+        credentialId: { $in: credentialIds },
+        subjectId: userId,
+        status: 'ACTIVE',
+      });
+
+      if (credentials.length !== credentialIds.length) {
+        return res.status(400).json({ 
+          error: 'Some credentials not found or invalid',
+          details: {
+            requested: credentialIds.length,
+            found: credentials.length,
+            requestedIds: credentialIds,
+            foundIds: credentials.map(c => c.credentialId)
+          }
+        });
+      }
+
+      request.status = 'approved';
+      request.holderId = userId;
+      request.sharedCredentials = credentials.map(c => ({
+        credentialId: c.credentialId,
+        type: c.credentialData?.type,
+        issuedAt: c.issuedAt,
+      }));
+      request.responseAt = new Date();
+    } else {
+      request.status = 'rejected';
+      request.holderId = userId;
+      request.responseAt = new Date();
+    }
+
+    await request.save();
+
+    logger.info('Verification request responded', { requestId, action, userId });
+
+    res.json({
+      success: true,
+      requestId: request.requestId,
+      status: request.status,
+      message: `Verification request ${action}d successfully`,
+    });
+  } catch (err: any) {
+    const errorId = logger.error('Respond verification error', '/api/credentials/respond-verification', err);
+    res.status(500).json({ error: 'Internal error', errorId });
   }
 });
 
@@ -286,6 +414,34 @@ router.post('/verify', async (req: Request, res: Response) => {
   }
 });
 
+// GET /api/credentials/:credentialId
+// IMPORTANT: This must come AFTER all specific routes like /verification-requests
+router.get('/:credentialId', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
+  try {
+    const { credentialId } = req.params;
+    const session = req.session!;
+
+    const credential = await Credential.findOne({ credentialId });
+    if (!credential) {
+      return res.status(404).json({ error: 'Credential not found' });
+    }
+
+    // Check if user has access (owner or issuer)
+    if (credential.subjectId.toString() !== session.userId.toString() &&
+        credential.issuerId?.toString() !== session.userId.toString()) {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    res.json({
+      success: true,
+      credential,
+    });
+  } catch (err: any) {
+    const errorId = logger.error('Fetch credential error', '/api/credentials/:credentialId', err);
+    res.status(500).json({ error: 'Internal server error', errorId });
+  }
+});
+
 // POST /api/credentials/:credentialId/revoke
 router.post('/:credentialId/revoke', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
   try {
@@ -371,130 +527,6 @@ router.get('/:credentialId/usage-log', validateSession, async (req: Request & { 
   } catch (err: any) {
     const errorId = logger.error('Audit log fetch error', '/api/credentials/:credentialId/usage-log', err);
     res.status(500).json({ error: 'Internal server error', errorId });
-  }
-});
-
-// GET /api/credentials/verification-requests - Get verification requests for holder
-router.get('/verification-requests', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
-  try {
-    const { VerificationRequest, UserWallet } = await import('../models');
-    const userId = req.session!.userId;
-
-    // Get holder's DID
-    const wallet = await UserWallet.findOne({ userId });
-    if (!wallet) {
-      return res.json({
-        success: true,
-        count: 0,
-        requests: [],
-        message: 'No wallet linked',
-      });
-    }
-
-    const { status } = req.query;
-    const filter: any = {
-      $or: [
-        { holderDid: wallet.did },
-        { holderId: userId },
-      ],
-    };
-
-    if (status) filter.status = status;
-
-    const requests = await VerificationRequest.find(filter)
-      .sort({ createdAt: -1 })
-      .limit(50);
-
-    res.json({
-      success: true,
-      count: requests.length,
-      requests: requests.map((r) => ({
-        requestId: r.requestId,
-        verifierDid: r.verifierDid,
-        requestedCredentialTypes: r.requestedCredentialTypes,
-        requestedFields: r.requestedFields,
-        purpose: r.purpose,
-        status: r.status,
-        expiresAt: r.expiresAt,
-        createdAt: r.createdAt,
-      })),
-    });
-  } catch (err: any) {
-    const errorId = logger.error('Get verification requests error', '/api/credentials/verification-requests', err);
-    res.status(500).json({ error: 'Internal error', errorId });
-  }
-});
-
-// POST /api/credentials/respond-verification - Respond to verification request
-router.post('/respond-verification', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
-  try {
-    const { VerificationRequest } = await import('../models');
-    const { requestId, action, selectedCredentials } = req.body;
-
-    if (!requestId || !action) {
-      return res.status(400).json({ error: 'requestId and action required' });
-    }
-
-    if (!['approve', 'reject'].includes(action)) {
-      return res.status(400).json({ error: 'action must be approve or reject' });
-    }
-
-    const userId = req.session!.userId;
-
-    const request = await VerificationRequest.findOne({ requestId });
-    if (!request) {
-      return res.status(404).json({ error: 'Verification request not found' });
-    }
-
-    if (request.status !== 'pending') {
-      return res.status(400).json({ error: `Request already ${request.status}` });
-    }
-
-    if (new Date() > request.expiresAt) {
-      request.status = 'expired';
-      await request.save();
-      return res.status(400).json({ error: 'Request expired' });
-    }
-
-    if (action === 'approve') {
-      if (!selectedCredentials || !Array.isArray(selectedCredentials)) {
-        return res.status(400).json({ error: 'selectedCredentials array required for approval' });
-      }
-
-      // Verify credentials belong to user
-      const credentials = await Credential.find({
-        credentialId: { $in: selectedCredentials.map((c: any) => c.credentialId) },
-        subjectId: userId,
-        status: 'ACTIVE',
-      });
-
-      if (credentials.length !== selectedCredentials.length) {
-        return res.status(400).json({ error: 'Some credentials not found or invalid' });
-      }
-
-      request.status = 'approved';
-      request.holderId = userId;
-      request.sharedCredentials = selectedCredentials;
-      request.responseAt = new Date();
-    } else {
-      request.status = 'rejected';
-      request.holderId = userId;
-      request.responseAt = new Date();
-    }
-
-    await request.save();
-
-    logger.info('Verification request responded', { requestId, action, userId });
-
-    res.json({
-      success: true,
-      requestId: request.requestId,
-      status: request.status,
-      message: `Verification request ${action}d successfully`,
-    });
-  } catch (err: any) {
-    const errorId = logger.error('Respond verification error', '/api/credentials/respond-verification', err);
-    res.status(500).json({ error: 'Internal error', errorId });
   }
 });
 

@@ -41,6 +41,7 @@ function App() {
   // User (Holder) state
   const [myCredentials, setMyCredentials] = useState<any[]>([]);
   const [myRequests, setMyRequests] = useState<any[]>([]);
+  const [incomingVerificationRequests, setIncomingVerificationRequests] = useState<any[]>([]);
   const [requestForm, setRequestForm] = useState<any>({});
   const [selectedCredential, setSelectedCredential] = useState<any>(null);
   const [qrCodeData, setQrCodeData] = useState<string>("");
@@ -54,8 +55,28 @@ function App() {
   const [myVerificationRequests, setMyVerificationRequests] = useState<any[]>([]);
   const [verifierForm, setVerifierForm] = useState<any>({});
   
+  // Dynamic issuer list
+  const [availableIssuers, setAvailableIssuers] = useState<any[]>([]);
+  
   // Modals
   const [selectedDoc, setSelectedDoc] = useState<any>(null);
+
+  // Fetch available issuers on mount
+  useEffect(() => {
+    const fetchIssuers = async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/issuer/list`);
+        const data = await res.json();
+        if (data.success && data.issuers) {
+          setAvailableIssuers(data.issuers);
+        }
+      } catch (err) {
+        console.error('Failed to fetch issuers:', err);
+      }
+    };
+    
+    fetchIssuers();
+  }, []);
 
   useEffect(() => {
     const saved = localStorage.getItem("session");
@@ -66,6 +87,13 @@ function App() {
       setUser(data.user);
       setWallet(data.wallet || "");
       setDid(data.did || "");
+      
+      // Auto-connect wallet on page load
+      if (!data.wallet && (window as any).ethereum) {
+        setTimeout(() => {
+          connectWallet();
+        }, 1000);
+      }
       
       // Load role-specific data
       if (data.user.role === 'holder') {
@@ -121,6 +149,11 @@ function App() {
 
         console.log('Logged in as:', userData.role, userData);
         showStatus("success", `Welcome ${data.firstName}!`);
+        
+        // Auto-connect wallet after login
+        setTimeout(() => {
+          connectWallet();
+        }, 500);
         
         // Load data based on role
         if (userData.role === 'holder') {
@@ -201,9 +234,51 @@ function App() {
         const data = await reqRes.json();
         setMyRequests(data.requests || []);
       }
+
+      // Fetch incoming verification requests from verifiers
+      const verifyReqRes = await fetch(`${BACKEND_URL}/api/credentials/verification-requests`, {
+        headers: { 'x-session-id': sid },
+      });
+      if (verifyReqRes.ok) {
+        const data = await verifyReqRes.json();
+        console.log('Incoming verification requests loaded:', data.count, data.requests);
+        setIncomingVerificationRequests(data.requests || []);
+      } else {
+        console.error('Failed to load verification requests:', await verifyReqRes.text());
+      }
     } catch (err) {
       console.error('Error loading user data:', err);
     }
+  };
+
+  const respondToVerificationRequest = async (requestId: string, action: 'approve' | 'reject', selectedCredentials?: string[]) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/credentials/respond-verification`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-id': sessionId,
+        },
+        body: JSON.stringify({
+          requestId,
+          action,
+          selectedCredentials: selectedCredentials || [],
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        showStatus("success", `Verification request ${action}d successfully!`);
+        loadUserData(sessionId);
+        setSelectedDoc(null);
+      } else {
+        showStatus("error", data.error);
+      }
+    } catch (err: any) {
+      showStatus("error", err.message);
+    }
+    setLoading(false);
   };
 
   const requestDocument = async () => {
@@ -299,6 +374,13 @@ function App() {
         showStatus("success", "Issuer registered!");
         loadIssuerData(sessionId);
         setRequestForm({});
+        
+        // Refresh issuer list for all users
+        const listRes = await fetch(`${BACKEND_URL}/api/issuer/list`);
+        const listData = await listRes.json();
+        if (listData.success && listData.issuers) {
+          setAvailableIssuers(listData.issuers);
+        }
       } else {
         showStatus("error", data.error);
       }
@@ -378,8 +460,8 @@ function App() {
   };
 
   const createVerificationRequest = async () => {
-    if (!verifierForm.documentType || !verifierForm.purpose) {
-      showStatus("error", "Please provide document type and purpose");
+    if (!verifierForm.holderEmail || !verifierForm.documentType || !verifierForm.purpose) {
+      showStatus("error", "Please provide holder email, document type, and purpose");
       return;
     }
 
@@ -392,6 +474,7 @@ function App() {
           'x-session-id': sessionId,
         },
         body: JSON.stringify({
+          holderEmail: verifierForm.holderEmail.trim(),
           requestedCredentialTypes: [verifierForm.documentType],
           purpose: verifierForm.purpose,
         }),
@@ -399,7 +482,7 @@ function App() {
 
       const data = await res.json();
       if (res.ok) {
-        showStatus("success", "Verification request created successfully!");
+        showStatus("success", `Verification request sent to ${verifierForm.holderEmail}!`);
         setVerifierForm({});
         loadVerifierData(sessionId);
         setView('my-requests');
@@ -636,6 +719,9 @@ function App() {
             <button className={view === 'my-requests' ? 'active' : ''} onClick={() => setView('my-requests')}>
               📨 My Requests
             </button>
+            <button className={view === 'incoming-verifications' ? 'active' : ''} onClick={() => setView('incoming-verifications')}>
+              🔔 Verification Requests {incomingVerificationRequests.length > 0 && `(${incomingVerificationRequests.length})`}
+            </button>
           </nav>
 
           <main className="main-content">
@@ -653,6 +739,11 @@ function App() {
                     <div className="stat-value">{myRequests.filter((r: any) => r.status === 'pending').length}</div>
                     <div className="stat-label">Pending Requests</div>
                   </div>
+                  <div className="stat-card">
+                    <div className="stat-icon">🔔</div>
+                    <div className="stat-value">{incomingVerificationRequests.length}</div>
+                    <div className="stat-label">Verification Requests</div>
+                  </div>
                 </div>
               </div>
             )}
@@ -667,20 +758,41 @@ function App() {
                   </div>
                 ) : (
                   <div className="credential-grid">
-                    {myCredentials.map((cred: any) => (
-                      <div key={cred.credentialId} className="credential-card">
-                        <h3>{getDocumentName(cred.credentialData)}</h3>
-                        <p className="cred-id">ID: {cred.credentialId.slice(0, 20)}...</p>
-                        <p className="cred-date">Issued: {new Date(cred.issuedAt).toLocaleDateString()}</p>
-                        <p className="cred-status">Status: <span className="badge-active">{cred.status}</span></p>
-                        <button 
-                          className="btn-sm btn-primary"
-                          onClick={() => generateQRCode(cred)}
-                        >
-                          📱 Generate QR Code
-                        </button>
-                      </div>
-                    ))}
+                    {myCredentials.map((cred: any) => {
+                      const docType = cred.credentialData?.metadata?.documentType || 'Unknown';
+                      const claims = cred.credentialData?.credentialSubject || {};
+                      // Priority: issuerName from backend > metadata.issuerName > fallback
+                      const issuerName = cred.issuerName || cred.issuerOrganizationName || cred.credentialData?.metadata?.issuerName || 'Unknown Issuer';
+                      
+                      return (
+                        <div key={cred.credentialId} className="credential-card">
+                          <h3>{getDocumentName(cred.credentialData)}</h3>
+                          <p className="cred-id"><strong>ID:</strong> {cred.credentialId.slice(0, 20)}...</p>
+                          <p><strong>Issued By:</strong> {issuerName}</p>
+                          <p className="cred-date"><strong>Issued:</strong> {new Date(cred.issuedAt).toLocaleDateString()}</p>
+                          <p className="cred-status"><strong>Status:</strong> <span className="badge-active">{cred.status}</span></p>
+                          
+                          {/* Show document details */}
+                          <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#f1f5f9', borderRadius: '5px', fontSize: '13px', textAlign: 'left' }}>
+                            <strong>📋 Document Details:</strong>
+                            {Object.keys(claims).filter(key => key !== 'id').map((key) => (
+                              <div key={key} style={{ marginTop: '5px', display: 'flex', justifyContent: 'space-between' }}>
+                                <span style={{ fontWeight: '600', color: '#475569' }}>{key}:</span>
+                                <span style={{ color: '#0f172a' }}>{String(claims[key])}</span>
+                              </div>
+                            ))}
+                          </div>
+                          
+                          <button 
+                            className="btn-sm btn-primary"
+                            onClick={() => generateQRCode(cred)}
+                            style={{ marginTop: '10px', width: '100%' }}
+                          >
+                            📱 Generate QR Code
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
                 
@@ -733,10 +845,15 @@ function App() {
                       onChange={(e) => setRequestForm({ ...requestForm, issuerName: e.target.value })}
                     >
                       <option value="">Select issuer</option>
-                      <option value="Aadhar">Aadhar (Aadhaar Card)</option>
-                      <option value="UIDAI">UIDAI (Aadhaar)</option>
-                      <option value="Income Tax Department">Income Tax Department (PAN)</option>
-                      <option value="RTO">RTO (Driving License)</option>
+                      {availableIssuers.length > 0 ? (
+                        availableIssuers.map((issuer, idx) => (
+                          <option key={idx} value={issuer.organizationName}>
+                            {issuer.organizationName} ({issuer.organizationType})
+                          </option>
+                        ))
+                      ) : (
+                        <option value="" disabled>No issuers available</option>
+                      )}
                     </select>
                   </div>
 
@@ -773,6 +890,113 @@ function App() {
                         <p><strong>Issuer:</strong> {req.issuerName}</p>
                         <p><strong>Requested:</strong> {new Date(req.createdAt).toLocaleString()}</p>
                         {req.reason && <p><strong>Reason:</strong> {req.reason}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {view === 'incoming-verifications' && (
+              <div className="content-section">
+                <h2>🔔 Incoming Verification Requests</h2>
+                <p className="help-text">Verifiers (banks, services, employers) are requesting to verify your credentials</p>
+                <p style={{ fontSize: '12px', color: '#666' }}>
+                  Debug: Found {incomingVerificationRequests.length} verification requests
+                </p>
+                {incomingVerificationRequests.length === 0 ? (
+                  <div className="empty-state">
+                    <p>No verification requests yet.</p>
+                    <p style={{ fontSize: '14px', color: '#666' }}>
+                      Verifiers can send you targeted verification requests by entering your email address.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="request-list">
+                    {incomingVerificationRequests.map((req: any) => (
+                      <div key={req.requestId} className="request-card verification-request">
+                        <div className="req-header">
+                          <h3>🏦 Verification Request</h3>
+                          <span className={`status-badge status-${req.status}`}>{req.status}</span>
+                        </div>
+                        <p><strong>From:</strong> {req.verifierName || 'Unknown Verifier'}</p>
+                        {req.verifierEmail && <p><strong>Email:</strong> {req.verifierEmail}</p>}
+                        <p><strong>Purpose:</strong> {req.purpose}</p>
+                        <p><strong>Requested Documents:</strong></p>
+                        <ul style={{ marginLeft: '20px', marginTop: '5px' }}>
+                          {req.requestedCredentialTypes?.map((type: string, idx: number) => (
+                            <li key={idx}>{getDocumentName(type)}</li>
+                          ))}
+                        </ul>
+                        {req.requestedFields && req.requestedFields.length > 0 && (
+                          <>
+                            <p><strong>Requested Fields:</strong></p>
+                            <ul style={{ marginLeft: '20px', marginTop: '5px' }}>
+                              {req.requestedFields.map((field: string, idx: number) => (
+                                <li key={idx}>{field}</li>
+                              ))}
+                            </ul>
+                          </>
+                        )}
+                        <p><strong>Created:</strong> {new Date(req.createdAt).toLocaleString()}</p>
+                        <p><strong>Expires:</strong> {new Date(req.expiresAt).toLocaleString()}</p>
+                        
+                        {req.status === 'pending' && (
+                          <div style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
+                            <button
+                              className="btn-primary"
+                              onClick={() => {
+                                console.log('Looking for credentials matching:', req.requestedCredentialTypes);
+                                console.log('My credentials:', myCredentials);
+                                
+                                // Find matching credentials - check both type array and metadata
+                                const matchingCreds = myCredentials.filter((cred: any) => {
+                                  const credTypes = cred.credentialData?.type || [];
+                                  const docType = cred.credentialData?.metadata?.documentType;
+                                  
+                                  return req.requestedCredentialTypes.some((reqType: string) => {
+                                    // Check if type array includes reqType or reqType + 'Credential'
+                                    const typeMatch = credTypes.includes(reqType) || credTypes.includes(`${reqType}Credential`);
+                                    // Check metadata documentType
+                                    const metaMatch = docType === reqType;
+                                    return typeMatch || metaMatch;
+                                  });
+                                });
+                                
+                                console.log('Matching credentials found:', matchingCreds);
+                                
+                                if (matchingCreds.length === 0) {
+                                  showStatus("error", "You don't have the requested credentials. Please request them from an issuer first.");
+                                  return;
+                                }
+                                // Auto-approve with first matching credential
+                                respondToVerificationRequest(req.requestId, 'approve', [matchingCreds[0].credentialId]);
+                              }}
+                              disabled={loading}
+                            >
+                              ✅ Approve & Share Credentials
+                            </button>
+                            <button
+                              className="btn-danger"
+                              onClick={() => respondToVerificationRequest(req.requestId, 'reject')}
+                              disabled={loading}
+                            >
+                              ❌ Reject Request
+                            </button>
+                          </div>
+                        )}
+                        
+                        {req.status === 'approved' && (
+                          <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#d4edda', borderRadius: '5px' }}>
+                            ✅ You have shared your credentials with this verifier
+                          </div>
+                        )}
+                        
+                        {req.status === 'rejected' && (
+                          <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#f8d7da', borderRadius: '5px' }}>
+                            ❌ You rejected this verification request
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1007,25 +1231,33 @@ function App() {
             {view === 'dashboard' && (
               <div className="dashboard-content">
                 <h2>Verifier Dashboard</h2>
+                <p className="help-text">Create verification requests and verify credentials from holders</p>
                 <div className="stats-grid">
                   <div className="stat-card">
                     <div className="stat-icon">📨</div>
                     <div className="stat-value">{myVerificationRequests.length}</div>
-                    <div className="stat-label">Total Requests</div>
+                    <div className="stat-label">Total Requests Sent</div>
                   </div>
                   <div className="stat-card">
                     <div className="stat-icon">⏳</div>
                     <div className="stat-value">
                       {myVerificationRequests.filter((r: any) => r.status === 'pending').length}
                     </div>
-                    <div className="stat-label">Pending</div>
+                    <div className="stat-label">Awaiting Response</div>
                   </div>
                   <div className="stat-card">
                     <div className="stat-icon">✅</div>
                     <div className="stat-value">
-                      {myVerificationRequests.filter((r: any) => r.status === 'verified').length}
+                      {myVerificationRequests.filter((r: any) => r.status === 'approved').length}
                     </div>
-                    <div className="stat-label">Verified</div>
+                    <div className="stat-label">Approved</div>
+                  </div>
+                  <div className="stat-card">
+                    <div className="stat-icon">❌</div>
+                    <div className="stat-value">
+                      {myVerificationRequests.filter((r: any) => r.status === 'rejected').length}
+                    </div>
+                    <div className="stat-label">Rejected</div>
                   </div>
                 </div>
               </div>
@@ -1092,26 +1324,40 @@ function App() {
             {view === 'create-request' && (
               <div className="content-section">
                 <h2>➕ Create Verification Request</h2>
+                <p className="help-text">Send a verification request to a specific credential holder</p>
                 <div className="form-card">
                   <div className="form-group">
-                    <label>Document Type</label>
+                    <label>Holder Email Address *</label>
+                    <input
+                      type="email"
+                      placeholder="Enter the email of the credential holder..."
+                      value={verifierForm.holderEmail || ''}
+                      onChange={(e) => setVerifierForm({ ...verifierForm, holderEmail: e.target.value })}
+                    />
+                    <small style={{ color: '#666', fontSize: '12px' }}>
+                      Enter the email address of the user whose credentials you want to verify
+                    </small>
+                  </div>
+
+                  <div className="form-group">
+                    <label>Document Type *</label>
                     <select
                       value={verifierForm.documentType || ''}
                       onChange={(e) => setVerifierForm({ ...verifierForm, documentType: e.target.value })}
                     >
                       <option value="">Select document type...</option>
-                      <option value="Identity Proof">Identity Proof</option>
-                      <option value="Academic Certificate">Academic Certificate</option>
-                      <option value="Employment Record">Employment Record</option>
-                      <option value="Medical Record">Medical Record</option>
-                      <option value="Financial Statement">Financial Statement</option>
+                      <option value="aadhar">Aadhaar Card</option>
+                      <option value="pan">PAN Card</option>
+                      <option value="dl">Driving License</option>
+                      <option value="passport">Passport</option>
+                      <option value="voter_id">Voter ID</option>
                     </select>
                   </div>
 
                   <div className="form-group">
-                    <label>Purpose of Verification</label>
+                    <label>Purpose of Verification *</label>
                     <textarea
-                      placeholder="Explain why you need to verify this document..."
+                      placeholder="E.g., Loan application KYC verification, Background check for employment, etc."
                       rows={4}
                       value={verifierForm.purpose || ''}
                       onChange={(e) => setVerifierForm({ ...verifierForm, purpose: e.target.value })}
@@ -1121,9 +1367,9 @@ function App() {
                   <button
                     className="btn-primary"
                     onClick={createVerificationRequest}
-                    disabled={loading || !verifierForm.documentType || !verifierForm.purpose}
+                    disabled={loading || !verifierForm.holderEmail || !verifierForm.documentType || !verifierForm.purpose}
                   >
-                    {loading ? 'Sending...' : 'Create Verification Request'}
+                    {loading ? 'Sending...' : '📤 Send Verification Request'}
                   </button>
                 </div>
               </div>
@@ -1134,29 +1380,174 @@ function App() {
                 <h2>📋 My Verification Requests</h2>
                 {myVerificationRequests.length === 0 ? (
                   <div className="empty-state">
-                    <p>No verification requests yet</p>
+                    <p>No verification requests sent yet</p>
                     <button className="btn-primary" onClick={() => setView('create-request')}>
                       Create Your First Request
                     </button>
                   </div>
                 ) : (
-                  <div className="requests-grid">
+                  <div className="request-list">
                     {myVerificationRequests.map((req: any) => (
-                      <div key={req._id || req.requestId} className="request-card">
-                        <div className="request-header">
-                          <span className={`status-badge ${req.status}`}>
-                            {req.status}
-                          </span>
+                      <div key={req.requestId} className="request-card">
+                        <div className="req-header">
+                          <h3>📄 {req.requestedCredentialTypes?.map((type: string) => getDocumentName(type)).join(', ') || 'Document Request'}</h3>
+                          <span className={`status-badge status-${req.status}`}>{req.status}</span>
                         </div>
-                        <h3>{req.requestedCredentialTypes ? req.requestedCredentialTypes.join(', ') : 'N/A'}</h3>
+                        <p><strong>Sent To:</strong> {req.holderName || 'Unknown Holder'}</p>
+                        {req.holderEmail && <p><strong>Email:</strong> {req.holderEmail}</p>}
                         <p><strong>Purpose:</strong> {req.purpose}</p>
-                        <p className="request-date">
-                          {new Date(req.createdAt).toLocaleDateString()}
-                        </p>
+                        <p><strong>Requested:</strong> {new Date(req.createdAt).toLocaleString()}</p>
+                        <p><strong>Expires:</strong> {new Date(req.expiresAt).toLocaleString()}</p>
+                        
+                        {req.status === 'approved' && req.sharedCredentials && (
+                          <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#d4edda', borderRadius: '5px' }}>
+                            ✅ Holder has shared their credentials
+                            <button
+                              className="btn-sm"
+                              style={{ marginLeft: '10px' }}
+                              onClick={() => setSelectedDoc(req)}
+                            >
+                              View Details
+                            </button>
+                          </div>
+                        )}
+                        
+                        {req.status === 'rejected' && (
+                          <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#f8d7da', borderRadius: '5px' }}>
+                            ❌ Holder rejected this request
+                          </div>
+                        )}
+                        
+                        {req.status === 'pending' && (
+                          <div style={{ marginTop: '10px', padding: '10px', backgroundColor: '#fff3cd', borderRadius: '5px' }}>
+                            ⏳ Waiting for holder response...
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {selectedDoc && (
+              <div className="modal-overlay" onClick={() => setSelectedDoc(null)}>
+                <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h2>📋 Shared Credential Details</h2>
+                    <button
+                      onClick={() => setSelectedDoc(null)}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        fontSize: '24px',
+                        cursor: 'pointer',
+                        color: '#666'
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  
+                  <div className="info-section" style={{ marginBottom: '20px' }}>
+                    <h3>Holder Information</h3>
+                    <p><strong>Name:</strong> {selectedDoc.holderName || 'Unknown'}</p>
+                    <p><strong>Email:</strong> {selectedDoc.holderEmail || 'N/A'}</p>
+                    <p><strong>Purpose:</strong> {selectedDoc.purpose}</p>
+                    <p><strong>Status:</strong> <span className={`status-badge status-${selectedDoc.status}`}>{selectedDoc.status}</span></p>
+                    <p><strong>Approved At:</strong> {selectedDoc.respondedAt ? new Date(selectedDoc.respondedAt).toLocaleString() : 'N/A'}</p>
+                  </div>
+
+                  <div className="info-section">
+                    <h3>Shared Credentials ({selectedDoc.sharedCredentials?.length || 0})</h3>
+                    {selectedDoc.sharedCredentials && selectedDoc.sharedCredentials.length > 0 ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                        {selectedDoc.sharedCredentials.map((cred: any, index: number) => (
+                          <div key={index} style={{ 
+                            padding: '15px', 
+                            border: '1px solid #ddd', 
+                            borderRadius: '8px',
+                            backgroundColor: '#f9f9f9'
+                          }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+                              <div style={{ flex: 1 }}>
+                                <p style={{ color: '#333' }}><strong>Type:</strong> {getDocumentName(cred.credentialType || cred.type || 'Unknown')}</p>
+                                <p style={{ color: '#333' }}><strong>Credential ID:</strong> <code style={{ fontSize: '12px', backgroundColor: '#e9ecef', padding: '2px 6px', borderRadius: '3px', color: '#333' }}>{cred.credentialId || cred.id || 'N/A'}</code></p>
+                                <p style={{ color: '#333' }}><strong>Issued:</strong> {cred.issuedAt ? new Date(cred.issuedAt).toLocaleDateString() : 'N/A'}</p>
+                                {cred.issuerName && <p style={{ color: '#333' }}><strong>Issuer:</strong> {cred.issuerName}</p>}
+                                
+                                {/* Show credential subject details */}
+                                {cred.credentialSubject && (
+                                  <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #ddd' }}>
+                                    {Object.entries(cred.credentialSubject).map(([key, value]: [string, any]) => {
+                                      if (key === 'id') return null;
+                                      const displayKey = key.replace(/([A-Z])/g, ' $1').replace(/^./, str => str.toUpperCase());
+                                      return (
+                                        <p key={key} style={{ color: '#333', fontSize: '14px' }}>
+                                          <strong>{displayKey}:</strong> {value}
+                                        </p>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                              <button
+                                className="btn-primary"
+                                style={{ marginLeft: '10px', whiteSpace: 'nowrap' }}
+                                onClick={async () => {
+                                  const credId = cred.credentialId || cred.id;
+                                  if (credId) {
+                                    await verifyCredential(credId);
+                                  }
+                                }}
+                              >
+                                🔍 Verify
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p style={{ color: '#999', fontStyle: 'italic' }}>No credentials shared</p>
+                    )}
+                  </div>
+
+                  {/* Verification Result inside modal */}
+                  {verificationResult && (
+                    <div className={`verification-result ${verificationResult.valid ? 'valid' : 'invalid'}`}
+                         style={{
+                           marginTop: '20px',
+                           padding: '1.5rem',
+                           borderRadius: '0.5rem',
+                           background: verificationResult.valid ? '#10b981' : '#ef4444',
+                           color: 'white'
+                         }}>
+                      <h3>{verificationResult.valid ? '✅ Valid Credential' : '❌ Invalid/Tampered Credential'}</h3>
+                      <p style={{marginTop: '0.5rem'}}>{verificationResult.message}</p>
+                      
+                      {verificationResult.valid && verificationResult.credential && (
+                        <div style={{marginTop: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.1)', borderRadius: '0.375rem'}}>
+                          <p><strong>Document:</strong> {getDocumentName({type: verificationResult.credential.type})}</p>
+                          <p><strong>Holder:</strong> {verificationResult.credential.holder?.name} ({verificationResult.credential.holder?.email})</p>
+                          <p><strong>Issuer:</strong> {verificationResult.credential.issuer?.name}</p>
+                          <p><strong>Issued:</strong> {new Date(verificationResult.credential.issuedAt).toLocaleDateString()}</p>
+                          {verificationResult.credential.expiresAt && (
+                            <p><strong>Expires:</strong> {new Date(verificationResult.credential.expiresAt).toLocaleDateString()}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
+                    <button className="btn-secondary" onClick={() => {
+                      setSelectedDoc(null);
+                      setVerificationResult(null);
+                    }}>
+                      Close
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
           </main>

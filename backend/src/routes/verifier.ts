@@ -30,36 +30,48 @@ async function requireVerifierRole(req: Request & { session?: ISession }, res: R
 router.post('/request', validateSession, requireVerifierRole, async (req: Request & { session?: ISession }, res: Response) => {
   try {
     const {
-      holderDid,
+      holderEmail,
       requestedCredentialTypes,
       requestedFields,
       purpose,
       expiresInMinutes,
     } = req.body;
 
-    if (!requestedCredentialTypes || !purpose) {
+    if (!holderEmail || !requestedCredentialTypes || !purpose) {
       return res.status(400).json({
-        error: 'Missing required fields: requestedCredentialTypes, purpose',
+        error: 'Missing required fields: holderEmail, requestedCredentialTypes, purpose',
       });
+    }
+
+    // Find the holder by email
+    const holder = await User.findOne({ email: holderEmail.toLowerCase().trim() });
+    if (!holder) {
+      return res.status(404).json({ error: 'Holder not found with that email' });
+    }
+
+    if (holder.role !== 'holder') {
+      return res.status(400).json({ error: 'User is not a credential holder' });
     }
 
     const userId = req.session!.userId;
     const user = await User.findById(userId);
     if (!user) {
-      return res.status(404).json({ error: 'User not found' });
+      return res.status(404).json({ error: 'Verifier user not found' });
     }
 
     // Create verifier DID if not exists
     const verifierDid = `did:verifier:${user._id}`;
+    const holderDid = `did:holder:${holder._id}`;
 
     const requestId = randomUUID();
-    const expiresAt = new Date(Date.now() + (expiresInMinutes || 60) * 60 * 1000);
+    const expiresAt = new Date(Date.now() + (expiresInMinutes || 1440) * 60 * 1000); // Default 24 hours
 
     const verificationRequest = new VerificationRequest({
       requestId,
       verifierId: userId,
       verifierDid,
-      holderDid: holderDid || undefined,
+      holderId: holder._id,
+      holderDid,
       requestedCredentialTypes,
       requestedFields: requestedFields || {},
       purpose: purpose.trim(),
@@ -69,13 +81,15 @@ router.post('/request', validateSession, requireVerifierRole, async (req: Reques
 
     await verificationRequest.save();
 
-    logger.info('Verification request created', { requestId, verifierId: userId });
+    logger.info('Verification request created', { requestId, verifierId: userId, holderId: holder._id });
 
     res.status(201).json({
       success: true,
       request: {
         requestId: verificationRequest.requestId,
         verifierDid: verificationRequest.verifierDid,
+        holderEmail: holder.email,
+        holderName: `${holder.firstName} ${holder.lastName}`,
         requestedCredentialTypes: verificationRequest.requestedCredentialTypes,
         requestedFields: verificationRequest.requestedFields,
         purpose: verificationRequest.purpose,
@@ -83,7 +97,7 @@ router.post('/request', validateSession, requireVerifierRole, async (req: Reques
         expiresAt: verificationRequest.expiresAt,
         createdAt: verificationRequest.createdAt,
       },
-      message: 'Verification request created successfully',
+      message: 'Verification request sent to holder successfully',
     });
   } catch (err: any) {
     const errorId = logger.error('Create verification request error', '/api/verifier/request', err);
@@ -101,15 +115,18 @@ router.get('/requests', validateSession, requireVerifierRole, async (req: Reques
     if (status) filter.status = status;
 
     const requests = await VerificationRequest.find(filter)
+      .populate('holderId', 'email firstName lastName')
       .sort({ createdAt: -1 })
-      .limit(100);
+      .limit(50);
 
     res.json({
       success: true,
       count: requests.length,
-      requests: requests.map((r) => ({
+      requests: requests.map((r: any) => ({
         requestId: r.requestId,
         holderDid: r.holderDid,
+        holderEmail: r.holderId?.email,
+        holderName: r.holderId ? `${r.holderId.firstName} ${r.holderId.lastName}` : 'Unknown',
         requestedCredentialTypes: r.requestedCredentialTypes,
         requestedFields: r.requestedFields,
         purpose: r.purpose,

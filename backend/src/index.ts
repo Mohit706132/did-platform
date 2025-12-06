@@ -53,19 +53,21 @@ app.get("/health", (_req, res) => {
 // Cleanup endpoint - Delete all credentials and requests (for development only)
 app.post("/api/cleanup", async (req, res) => {
   try {
-    const { Credential, CredentialRequest } = require('./models');
+    const { Credential, CredentialRequest, VerificationRequest } = require('./models');
     
     const deletedCredentials = await Credential.deleteMany({});
     const deletedRequests = await CredentialRequest.deleteMany({});
+    const deletedVerificationRequests = await VerificationRequest.deleteMany({});
     
-    console.log(`Cleanup: Deleted ${deletedCredentials.deletedCount} credentials and ${deletedRequests.deletedCount} requests`);
+    console.log(`Cleanup: Deleted ${deletedCredentials.deletedCount} credentials, ${deletedRequests.deletedCount} credential requests, and ${deletedVerificationRequests.deletedCount} verification requests`);
     
     res.json({
       success: true,
-      message: 'All credentials and requests deleted',
+      message: 'All credentials, credential requests, and verification requests deleted. User accounts and organizations preserved.',
       deleted: {
         credentials: deletedCredentials.deletedCount,
-        requests: deletedRequests.deletedCount,
+        credentialRequests: deletedRequests.deletedCount,
+        verificationRequests: deletedVerificationRequests.deletedCount,
       },
     });
   } catch (error: any) {
