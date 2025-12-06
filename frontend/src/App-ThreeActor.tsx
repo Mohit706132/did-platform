@@ -1,6 +1,7 @@
 // Redesigned Three-Actor DID Platform - Indian Context
 // Workflow: User requests credential → Issuer approves → User shares with Verifier
 import { useEffect, useState } from "react";
+import QRCode from "qrcode";
 import "./App.css";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
@@ -41,12 +42,15 @@ function App() {
   const [myCredentials, setMyCredentials] = useState<any[]>([]);
   const [myRequests, setMyRequests] = useState<any[]>([]);
   const [requestForm, setRequestForm] = useState<any>({});
+  const [selectedCredential, setSelectedCredential] = useState<any>(null);
+  const [qrCodeData, setQrCodeData] = useState<string>("");
   
   // Issuer state
   const [issuerProfile, setIssuerProfile] = useState<any>(null);
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
   
   // Verifier state
+  const [verificationResult, setVerificationResult] = useState<any>(null);
   const [myVerificationRequests, setMyVerificationRequests] = useState<any[]>([]);
   const [verifierForm, setVerifierForm] = useState<any>({});
   
@@ -408,6 +412,87 @@ function App() {
     setLoading(false);
   };
 
+  // ===== QR CODE & SHARING =====
+  const generateQRCode = async (credential: any) => {
+    try {
+      const shareData = JSON.stringify({
+        credentialId: credential.credentialId,
+        holderEmail: user?.email,
+        type: credential.credentialData?.type || [],
+      });
+      
+      const qrDataUrl = await QRCode.toDataURL(shareData, {
+        width: 300,
+        margin: 2,
+      });
+      
+      setQrCodeData(qrDataUrl);
+      setSelectedCredential(credential);
+    } catch (err) {
+      console.error('Error generating QR code:', err);
+      showStatus("error", "Failed to generate QR code");
+    }
+  };
+
+  const verifyCredential = async (credentialIdOrQRData: string) => {
+    setLoading(true);
+    try {
+      let credentialId = credentialIdOrQRData;
+      
+      // Try to parse as JSON if it looks like QR data
+      try {
+        const parsed = JSON.parse(credentialIdOrQRData);
+        if (parsed.credentialId) {
+          credentialId = parsed.credentialId;
+        }
+      } catch {
+        // Not JSON, use as-is
+      }
+
+      const res = await fetch(`${BACKEND_URL}/api/verifier/verify-credential`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-id': sessionId,
+        },
+        body: JSON.stringify({ credentialId }),
+      });
+
+      const data = await res.json();
+      setVerificationResult(data);
+      
+      if (data.valid) {
+        showStatus("success", "Credential is valid!");
+      } else {
+        showStatus("error", data.message || "Credential is invalid");
+      }
+    } catch (err: any) {
+      showStatus("error", err.message);
+      setVerificationResult(null);
+    }
+    setLoading(false);
+  };
+
+  // Get friendly document name
+  const getDocumentName = (credentialData: any) => {
+    if (!credentialData || !credentialData.type) return "Document";
+    
+    const types = Array.isArray(credentialData.type) ? credentialData.type : [credentialData.type];
+    const docType = types.find((t: string) => t !== "VerifiableCredential") || types[0];
+    
+    // Map credential types to friendly names
+    const nameMap: Record<string, string> = {
+      'aadharCredential': 'Aadhaar Card',
+      'panCredential': 'PAN Card',
+      'dlCredential': 'Driving License',
+      'AcademicCertificateCredential': 'Academic Certificate',
+      'EmploymentRecordCredential': 'Employment Record',
+      'MedicalRecordCredential': 'Medical Record',
+    };
+    
+    return nameMap[docType] || docType.replace('Credential', '').replace(/([A-Z])/g, ' $1').trim();
+  };
+
   // ===== RENDER =====
   
   if (!isAuth) {
@@ -584,11 +669,41 @@ function App() {
                   <div className="credential-grid">
                     {myCredentials.map((cred: any) => (
                       <div key={cred.credentialId} className="credential-card">
-                        <h3>{cred.credentialData.type[1]}</h3>
-                        <p className="cred-id">ID: {cred.credentialId.slice(0, 12)}...</p>
+                        <h3>{getDocumentName(cred.credentialData)}</h3>
+                        <p className="cred-id">ID: {cred.credentialId.slice(0, 20)}...</p>
                         <p className="cred-date">Issued: {new Date(cred.issuedAt).toLocaleDateString()}</p>
+                        <p className="cred-status">Status: <span className="badge-active">{cred.status}</span></p>
+                        <button 
+                          className="btn-sm btn-primary"
+                          onClick={() => generateQRCode(cred)}
+                        >
+                          📱 Generate QR Code
+                        </button>
                       </div>
                     ))}
+                  </div>
+                )}
+                
+                {/* QR Code Modal */}
+                {qrCodeData && selectedCredential && (
+                  <div className="modal-overlay" onClick={() => {setQrCodeData(""); setSelectedCredential(null);}}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                      <h2>Share Credential</h2>
+                      <h3>{getDocumentName(selectedCredential.credentialData)}</h3>
+                      <div className="qr-container">
+                        <img src={qrCodeData} alt="QR Code" style={{maxWidth: '300px', margin: '1rem auto', display: 'block'}} />
+                      </div>
+                      <p style={{textAlign: 'center', fontSize: '0.9rem', color: '#94a3b8'}}>
+                        Scan this QR code with a verifier to share your credential
+                      </p>
+                      <p style={{textAlign: 'center', fontSize: '0.8rem', marginTop: '0.5rem'}}>
+                        <strong>Credential ID:</strong><br/>
+                        <code style={{fontSize: '0.75rem', wordBreak: 'break-all'}}>{selectedCredential.credentialId}</code>
+                      </p>
+                      <button className="btn-secondary" onClick={() => {setQrCodeData(""); setSelectedCredential(null);}}>
+                        Close
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -618,6 +733,7 @@ function App() {
                       onChange={(e) => setRequestForm({ ...requestForm, issuerName: e.target.value })}
                     >
                       <option value="">Select issuer</option>
+                      <option value="Aadhar">Aadhar (Aadhaar Card)</option>
                       <option value="UIDAI">UIDAI (Aadhaar)</option>
                       <option value="Income Tax Department">Income Tax Department (PAN)</option>
                       <option value="RTO">RTO (Driving License)</option>
@@ -876,6 +992,9 @@ function App() {
             <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>
               📊 Dashboard
             </button>
+            <button className={view === 'verify' ? 'active' : ''} onClick={() => setView('verify')}>
+              ✅ Verify Credential
+            </button>
             <button className={view === 'create-request' ? 'active' : ''} onClick={() => setView('create-request')}>
               ➕ Create Request
             </button>
@@ -909,6 +1028,64 @@ function App() {
                     <div className="stat-label">Verified</div>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {view === 'verify' && (
+              <div className="content-section">
+                <h2>✅ Verify Credential</h2>
+                <div className="form-card">
+                  <div className="form-group">
+                    <label>Credential ID or QR Data</label>
+                    <input
+                      type="text"
+                      placeholder="Paste credential ID or scan QR code data..."
+                      value={verifierForm.credentialId || ''}
+                      onChange={(e) => setVerifierForm({ ...verifierForm, credentialId: e.target.value })}
+                    />
+                  </div>
+
+                  <button
+                    className="btn-primary"
+                    onClick={() => {
+                      if (verifierForm.credentialId) {
+                        verifyCredential(verifierForm.credentialId);
+                      } else {
+                        showStatus("error", "Please enter a credential ID");
+                      }
+                    }}
+                    disabled={loading}
+                  >
+                    {loading ? 'Verifying...' : 'Verify Credential'}
+                  </button>
+                </div>
+
+                {/* Verification Result */}
+                {verificationResult && (
+                  <div className={`verification-result ${verificationResult.valid ? 'valid' : 'invalid'}`}
+                       style={{
+                         marginTop: '2rem',
+                         padding: '1.5rem',
+                         borderRadius: '0.5rem',
+                         background: verificationResult.valid ? '#10b981' : '#ef4444',
+                         color: 'white'
+                       }}>
+                    <h3>{verificationResult.valid ? '✅ Valid Credential' : '❌ Invalid Credential'}</h3>
+                    <p style={{marginTop: '0.5rem'}}>{verificationResult.message}</p>
+                    
+                    {verificationResult.valid && verificationResult.credential && (
+                      <div style={{marginTop: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.1)', borderRadius: '0.375rem'}}>
+                        <p><strong>Document:</strong> {getDocumentName({type: verificationResult.credential.type})}</p>
+                        <p><strong>Holder:</strong> {verificationResult.credential.holder?.name} ({verificationResult.credential.holder?.email})</p>
+                        <p><strong>Issuer:</strong> {verificationResult.credential.issuer?.name}</p>
+                        <p><strong>Issued:</strong> {new Date(verificationResult.credential.issuedAt).toLocaleDateString()}</p>
+                        {verificationResult.credential.expiresAt && (
+                          <p><strong>Expires:</strong> {new Date(verificationResult.credential.expiresAt).toLocaleDateString()}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
