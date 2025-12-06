@@ -43,11 +43,17 @@ export async function validateSession(req: Request & { session?: ISession }, res
 // POST /api/auth/register
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { email, password, firstName, lastName } = req.body;
+    const { email, password, firstName, lastName, role } = req.body;
 
     // Validate required fields
     if (!email || !password || !firstName || !lastName) {
       return res.status(400).json({ error: 'Missing required fields: email, password, firstName, lastName' });
+    }
+
+    // Validate role if provided
+    const userRole = role || 'holder';
+    if (!['holder', 'issuer', 'verifier'].includes(userRole)) {
+      return res.status(400).json({ error: 'Invalid role. Must be: holder, issuer, or verifier' });
     }
 
     // Validate email
@@ -77,6 +83,7 @@ router.post('/register', async (req: Request, res: Response) => {
       passwordSalt: salt,
       firstName: firstName.trim(),
       lastName: lastName.trim(),
+      role: userRole,
       verifiedAt: new Date(),
     });
 
@@ -170,6 +177,7 @@ router.post('/login', async (req: Request, res: Response) => {
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
+      role: user.role,
       walletAddress: wallet?.walletAddress || null,
       did: wallet?.did || null,
       expiresAt: new Date(session.expiresAt).toISOString(),

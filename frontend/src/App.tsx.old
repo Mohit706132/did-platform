@@ -2,7 +2,6 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 import { DID_METHOD_PREFIX } from "./blockchain/config";
-import { getCurrentAddress } from "./blockchain/didRegistry";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
 

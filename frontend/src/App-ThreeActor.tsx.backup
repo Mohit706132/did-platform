@@ -1,0 +1,788 @@
+// Three-Actor Model App.tsx
+import { useEffect, useState } from "react";
+import "./App.css";
+import { DID_METHOD_PREFIX } from "./blockchain/config";
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:4000";
+
+type UserRole = 'holder' | 'issuer' | 'verifier';
+
+interface User {
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: UserRole;
+}
+
+interface IssuerProfile {
+  organizationName: string;
+  organizationType: string;
+  country: string;
+  verificationStatus: string;
+  authorizedCredentialTypes: string[];
+}
+
+function App() {
+  // Auth
+  const [isAuth, setIsAuth] = useState(false);
+  const [sessionId, setSessionId] = useState("");
+  const [user, setUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  
+  // Form
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [selectedRole, setSelectedRole] = useState<UserRole>('holder');
+  
+  // Wallet
+  const [wallet, setWallet] = useState("");
+  const [did, setDid] = useState("");
+  
+  // UI
+  const [view, setView] = useState<string>('dashboard');
+  const [credentials, setCredentials] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<{ type: string, msg: string } | null>(null);
+  
+  // Issuer state
+  const [issuerProfile, setIssuerProfile] = useState<IssuerProfile | null>(null);
+  const [issuerForm, setIssuerForm] = useState<any>({});
+  
+  // Verifier state
+  const [verificationRequests, setVerificationRequests] = useState<any[]>([]);
+  const [verifierForm, setVerifierForm] = useState<any>({});
+  
+  // Holder state
+  const [holderRequests, setHolderRequests] = useState<any[]>([]);
+  const [selectedRequest, setSelectedRequest] = useState<any>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("session");
+    if (saved) {
+      const data = JSON.parse(saved);
+      setIsAuth(true);
+      setSessionId(data.sessionId);
+      setUser(data.user);
+      setWallet(data.wallet || "");
+      setDid(data.did || "");
+      
+      // Load role-specific data
+      if (data.user.role === 'holder') {
+        fetchCredentials(data.sessionId);
+        fetchHolderRequests(data.sessionId);
+      } else if (data.user.role === 'issuer') {
+        fetchIssuerProfile(data.sessionId);
+      } else if (data.user.role === 'verifier') {
+        fetchVerificationRequests(data.sessionId);
+      }
+    }
+  }, []);
+
+  const showStatus = (type: string, msg: string) => {
+    setStatus({ type, msg });
+    setTimeout(() => setStatus(null), 5000);
+  };
+
+  const handleAuth = async () => {
+    setLoading(true);
+    try {
+      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+      const body: any = { email, password };
+      
+      if (authMode === 'register') {
+        body.firstName = firstName;
+        body.lastName = lastName;
+        body.role = selectedRole;
+      }
+
+      const res = await fetch(`${BACKEND_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.sessionId) {
+        setIsAuth(true);
+        setSessionId(data.sessionId);
+        const userData = {
+          email: data.email,
+          firstName: data.firstName,
+          lastName: data.lastName,
+          role: data.role || selectedRole,
+        };
+        setUser(userData);
+        setWallet(data.walletAddress || "");
+        setDid(data.did || "");
+        
+        localStorage.setItem("session", JSON.stringify({
+          sessionId: data.sessionId,
+          user: userData,
+          wallet: data.walletAddress,
+          did: data.did,
+        }));
+
+        showStatus("success", `${authMode === 'login' ? 'Login' : 'Registration'} successful!`);
+        
+        // Load role-specific data
+        if (userData.role === 'issuer') {
+          fetchIssuerProfile(data.sessionId);
+        } else if (userData.role === 'verifier') {
+          fetchVerificationRequests(data.sessionId);
+        } else {
+          fetchCredentials(data.sessionId);
+          fetchHolderRequests(data.sessionId);
+        }
+      } else {
+        showStatus("error", data.error || "Authentication failed");
+      }
+    } catch (err: any) {
+      showStatus("error", err.message);
+    }
+    setLoading(false);
+  };
+
+  const handleLogout = () => {
+    setIsAuth(false);
+    setUser(null);
+    setSessionId("");
+    setWallet("");
+    setDid("");
+    setCredentials([]);
+    setIssuerProfile(null);
+    setVerificationRequests([]);
+    setHolderRequests([]);
+    localStorage.removeItem("session");
+    showStatus("info", "Logged out successfully");
+  };
+
+  const connectWallet = async () => {
+    if (!(window as any).ethereum) {
+      showStatus("error", "Please install MetaMask");
+      return;
+    }
+    try {
+      const accounts = await (window as any).ethereum.request({ 
+        method: 'eth_requestAccounts' 
+      });
+      const addr = accounts[0];
+      const userDid = `${DID_METHOD_PREFIX}${addr}`;
+      setWallet(addr);
+      setDid(userDid);
+      console.log('Connected DID:', userDid);
+      
+      // Update session storage
+      const saved = localStorage.getItem("session");
+      if (saved) {
+        const data = JSON.parse(saved);
+        data.wallet = addr;
+        data.did = userDid;
+        localStorage.setItem("session", JSON.stringify(data));
+      }
+      
+      showStatus("success", "Wallet connected!");
+    } catch (err: any) {
+      showStatus("error", err.message);
+    }
+  };
+
+  // ===== HOLDER FUNCTIONS =====
+  const fetchCredentials = async (sid: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/credentials`, {
+        headers: { 'x-session-id': sid },
+      });
+      const data = await res.json();
+      if (res.ok && data.credentials) {
+        setCredentials(data.credentials);
+      }
+    } catch (err) {
+      console.error('Error fetching credentials:', err);
+    }
+  };
+
+  const fetchHolderRequests = async (sid: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/credentials/verification-requests`, {
+        headers: { 'x-session-id': sid },
+      });
+      const data = await res.json();
+      if (res.ok && data.requests) {
+        setHolderRequests(data.requests);
+      }
+    } catch (err) {
+      console.error('Error fetching holder requests:', err);
+    }
+  };
+
+  const respondToRequest = async (requestId: string, action: 'approve' | 'reject', selectedCreds?: any[]) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/credentials/respond-verification`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-id': sessionId,
+        },
+        body: JSON.stringify({
+          requestId,
+          action,
+          selectedCredentials: selectedCreds || [],
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        showStatus("success", `Request ${action}d successfully`);
+        fetchHolderRequests(sessionId);
+        setSelectedRequest(null);
+      } else {
+        showStatus("error", data.error);
+      }
+    } catch (err: any) {
+      showStatus("error", err.message);
+    }
+    setLoading(false);
+  };
+
+  // ===== ISSUER FUNCTIONS =====
+  const fetchIssuerProfile = async (sid: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/issuer/profile`, {
+        headers: { 'x-session-id': sid },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setIssuerProfile(data.issuer);
+      }
+    } catch (err) {
+      console.error('Error fetching issuer profile:', err);
+    }
+  };
+
+  const registerIssuer = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/issuer/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-id': sessionId,
+        },
+        body: JSON.stringify(issuerForm),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        showStatus("success", "Issuer registered! Pending verification.");
+        fetchIssuerProfile(sessionId);
+      } else {
+        showStatus("error", data.error);
+      }
+    } catch (err: any) {
+      showStatus("error", err.message);
+    }
+    setLoading(false);
+  };
+
+  // ===== VERIFIER FUNCTIONS =====
+  const fetchVerificationRequests = async (sid: string) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/verifier/requests`, {
+        headers: { 'x-session-id': sid },
+      });
+      const data = await res.json();
+      if (res.ok && data.requests) {
+        setVerificationRequests(data.requests);
+      }
+    } catch (err) {
+      console.error('Error fetching verification requests:', err);
+    }
+  };
+
+  const createVerificationRequest = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/verifier/request`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-id': sessionId,
+        },
+        body: JSON.stringify(verifierForm),
+      });
+
+      const data = await res.json();
+      if (res.ok) {
+        showStatus("success", "Verification request created!");
+        fetchVerificationRequests(sessionId);
+        setVerifierForm({});
+        setView('requests');
+      } else {
+        showStatus("error", data.error);
+      }
+    } catch (err: any) {
+      showStatus("error", err.message);
+    }
+    setLoading(false);
+  };
+
+  // ===== RENDER FUNCTIONS =====
+  const renderAuthScreen = () => (
+    <div className="auth-container">
+      <div className="auth-card">
+        <h1>🔐 DID Platform</h1>
+        <p className="auth-subtitle">Decentralized Identity Management</p>
+        
+        <div className="auth-tabs">
+          <button
+            className={authMode === 'login' ? 'active' : ''}
+            onClick={() => setAuthMode('login')}
+          >
+            Login
+          </button>
+          <button
+            className={authMode === 'register' ? 'active' : ''}
+            onClick={() => setAuthMode('register')}
+          >
+            Register
+          </button>
+        </div>
+
+        <div className="auth-form">
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          
+          {authMode === 'register' && (
+            <>
+              <input
+                type="text"
+                placeholder="First Name"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+              />
+              <input
+                type="text"
+                placeholder="Last Name"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+              />
+              
+              <div className="role-selector">
+                <label>Select Role:</label>
+                <div className="role-options">
+                  <label className={selectedRole === 'holder' ? 'selected' : ''}>
+                    <input
+                      type="radio"
+                      name="role"
+                      value="holder"
+                      checked={selectedRole === 'holder'}
+                      onChange={() => setSelectedRole('holder')}
+                    />
+                    <span>👤 Holder</span>
+                    <small>Individual user</small>
+                  </label>
+                  <label className={selectedRole === 'issuer' ? 'selected' : ''}>
+                    <input
+                      type="radio"
+                      name="role"
+                      value="issuer"
+                      checked={selectedRole === 'issuer'}
+                      onChange={() => setSelectedRole('issuer')}
+                    />
+                    <span>🏛️ Issuer</span>
+                    <small>Government/Organization</small>
+                  </label>
+                  <label className={selectedRole === 'verifier' ? 'selected' : ''}>
+                    <input
+                      type="radio"
+                      name="role"
+                      value="verifier"
+                      checked={selectedRole === 'verifier'}
+                      onChange={() => setSelectedRole('verifier')}
+                    />
+                    <span>✅ Verifier</span>
+                    <small>Bank/Service Provider</small>
+                  </label>
+                </div>
+              </div>
+            </>
+          )}
+
+          <button onClick={handleAuth} disabled={loading}>
+            {loading ? 'Processing...' : authMode === 'login' ? 'Login' : 'Register'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderHolderDashboard = () => (
+    <div className="dashboard-content">
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className="stat-icon">📄</div>
+          <div className="stat-value">{credentials.length}</div>
+          <div className="stat-label">My Credentials</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon">📨</div>
+          <div className="stat-value">{holderRequests.filter(r => r.status === 'pending').length}</div>
+          <div className="stat-label">Pending Requests</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon">✅</div>
+          <div className="stat-value">{holderRequests.filter(r => r.status === 'approved').length}</div>
+          <div className="stat-label">Approved</div>
+        </div>
+      </div>
+
+      <div className="section">
+        <h2>📨 Verification Requests</h2>
+        {holderRequests.filter(r => r.status === 'pending').length === 0 ? (
+          <p className="empty-state">No pending requests</p>
+        ) : (
+          <div className="request-list">
+            {holderRequests.filter(r => r.status === 'pending').map((req) => (
+              <div key={req.requestId} className="request-card">
+                <h3>Request from {req.verifierDid}</h3>
+                <p><strong>Purpose:</strong> {req.purpose}</p>
+                <p><strong>Requested:</strong> {req.requestedCredentialTypes.join(', ')}</p>
+                <p><strong>Expires:</strong> {new Date(req.expiresAt).toLocaleString()}</p>
+                <div className="request-actions">
+                  <button onClick={() => setSelectedRequest(req)}>Review</button>
+                  <button
+                    className="btn-danger"
+                    onClick={() => respondToRequest(req.requestId, 'reject')}
+                  >
+                    Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {selectedRequest && (
+        <div className="modal-overlay" onClick={() => setSelectedRequest(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h2>Respond to Request</h2>
+            <p><strong>Purpose:</strong> {selectedRequest.purpose}</p>
+            <p><strong>Requested Types:</strong> {selectedRequest.requestedCredentialTypes.join(', ')}</p>
+            
+            <h3>Select Credentials to Share:</h3>
+            <div className="credential-select-list">
+              {credentials.filter(c => 
+                selectedRequest.requestedCredentialTypes.includes(c.credentialData.type[1])
+              ).map((cred) => (
+                <label key={cred.credentialId}>
+                  <input type="checkbox" value={cred.credentialId} />
+                  {cred.credentialData.type[1]} - {cred.credentialId}
+                </label>
+              ))}
+            </div>
+
+            <div className="modal-actions">
+              <button onClick={() => {
+                const selected = Array.from(
+                  document.querySelectorAll('.credential-select-list input:checked')
+                ).map((input: any) => ({ credentialId: input.value }));
+                respondToRequest(selectedRequest.requestId, 'approve', selected);
+              }}>
+                Approve & Share
+              </button>
+              <button onClick={() => setSelectedRequest(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderIssuerDashboard = () => {
+    if (!issuerProfile) {
+      return (
+        <div className="dashboard-content">
+          <h2>🏛️ Register as Issuer</h2>
+          <div className="form-card">
+            <input
+              type="text"
+              placeholder="Organization Name"
+              value={issuerForm.organizationName || ''}
+              onChange={(e) => setIssuerForm({ ...issuerForm, organizationName: e.target.value })}
+            />
+            <input
+              type="text"
+              placeholder="Organization Type (e.g., Government, University)"
+              value={issuerForm.organizationType || ''}
+              onChange={(e) => setIssuerForm({ ...issuerForm, organizationType: e.target.value })}
+            />
+            <input
+              type="text"
+              placeholder="Country"
+              value={issuerForm.country || ''}
+              onChange={(e) => setIssuerForm({ ...issuerForm, country: e.target.value })}
+            />
+            <input
+              type="text"
+              placeholder="Authorized Credential Types (comma-separated)"
+              value={issuerForm.authorizedCredentialTypes || ''}
+              onChange={(e) => setIssuerForm({ 
+                ...issuerForm, 
+                authorizedCredentialTypes: e.target.value.split(',').map((s: string) => s.trim()) 
+              })}
+            />
+            <button onClick={registerIssuer} disabled={loading}>
+              {loading ? 'Registering...' : 'Register as Issuer'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="dashboard-content">
+        <div className="issuer-profile-card">
+          <h2>🏛️ {issuerProfile.organizationName}</h2>
+          <div className="profile-info">
+            <p><strong>Type:</strong> {issuerProfile.organizationType}</p>
+            <p><strong>Country:</strong> {issuerProfile.country}</p>
+            <p>
+              <strong>Status:</strong>{' '}
+              <span className={`status-badge status-${issuerProfile.verificationStatus}`}>
+                {issuerProfile.verificationStatus}
+              </span>
+            </p>
+            <p><strong>Authorized Types:</strong></p>
+            <div className="badge-list">
+              {issuerProfile.authorizedCredentialTypes.map((type) => (
+                <span key={type} className="badge">{type}</span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {issuerProfile.verificationStatus === 'verified' && (
+          <div className="section">
+            <h3>Issue Credentials</h3>
+            <p>You can now issue credentials to holders. Use the "Issue" tab to create credentials.</p>
+          </div>
+        )}
+
+        {issuerProfile.verificationStatus === 'pending' && (
+          <div className="info-box">
+            ⏳ Your issuer registration is pending verification. You'll be able to issue credentials once approved.
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderVerifierDashboard = () => (
+    <div className="dashboard-content">
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className="stat-icon">📨</div>
+          <div className="stat-value">{verificationRequests.length}</div>
+          <div className="stat-label">Total Requests</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon">⏳</div>
+          <div className="stat-value">{verificationRequests.filter(r => r.status === 'pending').length}</div>
+          <div className="stat-label">Pending</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-icon">✅</div>
+          <div className="stat-value">{verificationRequests.filter(r => r.status === 'approved').length}</div>
+          <div className="stat-label">Approved</div>
+        </div>
+      </div>
+
+      <div className="section">
+        <h2>Recent Requests</h2>
+        {verificationRequests.length === 0 ? (
+          <p className="empty-state">No verification requests yet. Create one to get started.</p>
+        ) : (
+          <div className="request-list">
+            {verificationRequests.slice(0, 5).map((req) => (
+              <div key={req.requestId} className="request-card">
+                <h3>{req.purpose}</h3>
+                <p><strong>Status:</strong> <span className={`status-badge status-${req.status}`}>{req.status}</span></p>
+                <p><strong>Requested:</strong> {req.requestedCredentialTypes.join(', ')}</p>
+                <p><strong>Created:</strong> {new Date(req.createdAt).toLocaleString()}</p>
+                {req.sharedCredentials && (
+                  <p><strong>Credentials Received:</strong> {req.sharedCredentials.length}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const renderCreateVerificationRequest = () => (
+    <div className="dashboard-content">
+      <h2>Create Verification Request</h2>
+      <div className="form-card">
+        <input
+          type="text"
+          placeholder="Holder DID (optional)"
+          value={verifierForm.holderDid || ''}
+          onChange={(e) => setVerifierForm({ ...verifierForm, holderDid: e.target.value })}
+        />
+        <input
+          type="text"
+          placeholder="Requested Credential Types (comma-separated)"
+          value={verifierForm.requestedCredentialTypes || ''}
+          onChange={(e) => setVerifierForm({
+            ...verifierForm,
+            requestedCredentialTypes: e.target.value.split(',').map((s: string) => s.trim()),
+          })}
+        />
+        <textarea
+          placeholder="Purpose of verification"
+          value={verifierForm.purpose || ''}
+          onChange={(e) => setVerifierForm({ ...verifierForm, purpose: e.target.value })}
+          rows={4}
+        />
+        <input
+          type="number"
+          placeholder="Expires in minutes (default: 60)"
+          value={verifierForm.expiresInMinutes || ''}
+          onChange={(e) => setVerifierForm({ ...verifierForm, expiresInMinutes: parseInt(e.target.value) })}
+        />
+        <button onClick={createVerificationRequest} disabled={loading}>
+          {loading ? 'Creating...' : 'Create Request'}
+        </button>
+      </div>
+    </div>
+  );
+
+  if (!isAuth) {
+    return (
+      <div className="App">
+        {status && <div className={`status-banner ${status.type}`}>{status.msg}</div>}
+        {renderAuthScreen()}
+      </div>
+    );
+  }
+
+  return (
+    <div className="App">
+      {status && <div className={`status-banner ${status.type}`}>{status.msg}</div>}
+      
+      <header className="app-header">
+        <div className="header-left">
+          <h1>🔐 DID Platform</h1>
+          <span className="role-badge">{user?.role}</span>
+        </div>
+        <div className="header-right">
+          <span className="user-info">{user?.firstName} {user?.lastName}</span>
+          {!wallet && (
+            <button className="btn-wallet" onClick={connectWallet}>
+              Connect Wallet
+            </button>
+          )}
+          {wallet && (
+            <span className="wallet-addr" title={wallet}>
+              {wallet.slice(0, 6)}...{wallet.slice(-4)}
+            </span>
+          )}
+          <button className="btn-logout" onClick={handleLogout}>Logout</button>
+        </div>
+      </header>
+
+      <div className="app-layout">
+        <nav className="sidebar">
+          <button
+            className={view === 'dashboard' ? 'active' : ''}
+            onClick={() => setView('dashboard')}
+          >
+            📊 Dashboard
+          </button>
+          
+          {user?.role === 'holder' && (
+            <>
+              <button
+                className={view === 'credentials' ? 'active' : ''}
+                onClick={() => setView('credentials')}
+              >
+                📄 My Credentials
+              </button>
+            </>
+          )}
+          
+          {user?.role === 'issuer' && (
+            <>
+              <button
+                className={view === 'issue' ? 'active' : ''}
+                onClick={() => setView('issue')}
+              >
+                ➕ Issue Credential
+              </button>
+            </>
+          )}
+          
+          {user?.role === 'verifier' && (
+            <>
+              <button
+                className={view === 'create-request' ? 'active' : ''}
+                onClick={() => setView('create-request')}
+              >
+                ➕ New Request
+              </button>
+              <button
+                className={view === 'requests' ? 'active' : ''}
+                onClick={() => setView('requests')}
+              >
+                📨 All Requests
+              </button>
+            </>
+          )}
+        </nav>
+
+        <main className="main-content">
+          {view === 'dashboard' && user?.role === 'holder' && renderHolderDashboard()}
+          {view === 'dashboard' && user?.role === 'issuer' && renderIssuerDashboard()}
+          {view === 'dashboard' && user?.role === 'verifier' && renderVerifierDashboard()}
+          {view === 'create-request' && renderCreateVerificationRequest()}
+          {view === 'credentials' && (
+            <div className="dashboard-content">
+              <h2>My Credentials</h2>
+              {credentials.length === 0 ? (
+                <p className="empty-state">No credentials yet</p>
+              ) : (
+                <div className="credential-grid">
+                  {credentials.map((cred) => (
+                    <div key={cred.credentialId} className="credential-card">
+                      <h3>{cred.credentialData.type[1]}</h3>
+                      <p><strong>ID:</strong> {cred.credentialId}</p>
+                      <p><strong>Status:</strong> <span className={`status-badge status-${cred.status.toLowerCase()}`}>{cred.status}</span></p>
+                      <p><strong>Issued:</strong> {new Date(cred.issuedAt).toLocaleDateString()}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
+
+export default App;

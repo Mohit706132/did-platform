@@ -18,6 +18,8 @@ import { validateIssueRequest, validateRevokeRequest, validateCredentialStructur
 import { connectDatabase } from "./database"; // MongoDB connection
 import authRoutes from "./routes/auth";
 import credentialRoutes from "./routes/credentials";
+import issuerRoutes from "./routes/issuer";
+import verifierRoutes from "./routes/verifier";
 
 const app = express();
 const PORT = process.env.BACKEND_PORT || process.env.PORT || 4000;
@@ -49,11 +51,21 @@ app.get("/health", (_req, res) => {
 });
 
 // ===== API ROUTES =====
-// Authentication routes (new)
+// Authentication routes
 app.use("/api/auth", authRoutes);
 
-// Credential routes (new)
+// Credential routes
 app.use("/api/credentials", credentialRoutes);
+
+// User (Holder) routes
+import userRoutes from "./routes/user";
+app.use("/api/user", userRoutes);
+
+// Issuer routes
+app.use("/api/issuer", issuerRoutes);
+
+// Verifier routes
+app.use("/api/verifier", verifierRoutes);
 
 // ===== LEGACY ROUTES (Kept for backward compatibility) =====
 

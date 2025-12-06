@@ -23,6 +23,31 @@ router.post('/issue', validateSession, async (req: Request & { session?: ISessio
       return res.status(400).json({ error: 'Claims must be a JSON object' });
     }
 
+    // Check if user is issuer and has authorization
+    const { User, IssuerRegistry } = await import('../models');
+    const user = await User.findById(session.userId);
+    
+    if (user && user.role === 'issuer') {
+      const issuerProfile = await IssuerRegistry.findOne({ userId: session.userId });
+      
+      if (!issuerProfile) {
+        return res.status(403).json({ error: 'Issuer not registered' });
+      }
+
+      if (issuerProfile.verificationStatus !== 'verified') {
+        return res.status(403).json({ error: 'Issuer not verified yet' });
+      }
+
+      // Check if issuer is authorized for this credential type
+      const credentialType = type?.[1] || type?.[0] || 'UnknownCredential';
+      if (issuerProfile.authorizedCredentialTypes.length > 0 &&
+          !issuerProfile.authorizedCredentialTypes.includes(credentialType)) {
+        return res.status(403).json({
+          error: `Not authorized to issue ${credentialType}. Authorized types: ${issuerProfile.authorizedCredentialTypes.join(', ')}`,
+        });
+      }
+    }
+
     // Create credential using issuerService
     const vc = await issueCredential({
       subjectDid,
@@ -346,6 +371,130 @@ router.get('/:credentialId/usage-log', validateSession, async (req: Request & { 
   } catch (err: any) {
     const errorId = logger.error('Audit log fetch error', '/api/credentials/:credentialId/usage-log', err);
     res.status(500).json({ error: 'Internal server error', errorId });
+  }
+});
+
+// GET /api/credentials/verification-requests - Get verification requests for holder
+router.get('/verification-requests', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
+  try {
+    const { VerificationRequest, UserWallet } = await import('../models');
+    const userId = req.session!.userId;
+
+    // Get holder's DID
+    const wallet = await UserWallet.findOne({ userId });
+    if (!wallet) {
+      return res.json({
+        success: true,
+        count: 0,
+        requests: [],
+        message: 'No wallet linked',
+      });
+    }
+
+    const { status } = req.query;
+    const filter: any = {
+      $or: [
+        { holderDid: wallet.did },
+        { holderId: userId },
+      ],
+    };
+
+    if (status) filter.status = status;
+
+    const requests = await VerificationRequest.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    res.json({
+      success: true,
+      count: requests.length,
+      requests: requests.map((r) => ({
+        requestId: r.requestId,
+        verifierDid: r.verifierDid,
+        requestedCredentialTypes: r.requestedCredentialTypes,
+        requestedFields: r.requestedFields,
+        purpose: r.purpose,
+        status: r.status,
+        expiresAt: r.expiresAt,
+        createdAt: r.createdAt,
+      })),
+    });
+  } catch (err: any) {
+    const errorId = logger.error('Get verification requests error', '/api/credentials/verification-requests', err);
+    res.status(500).json({ error: 'Internal error', errorId });
+  }
+});
+
+// POST /api/credentials/respond-verification - Respond to verification request
+router.post('/respond-verification', validateSession, async (req: Request & { session?: ISession }, res: Response) => {
+  try {
+    const { VerificationRequest } = await import('../models');
+    const { requestId, action, selectedCredentials } = req.body;
+
+    if (!requestId || !action) {
+      return res.status(400).json({ error: 'requestId and action required' });
+    }
+
+    if (!['approve', 'reject'].includes(action)) {
+      return res.status(400).json({ error: 'action must be approve or reject' });
+    }
+
+    const userId = req.session!.userId;
+
+    const request = await VerificationRequest.findOne({ requestId });
+    if (!request) {
+      return res.status(404).json({ error: 'Verification request not found' });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({ error: `Request already ${request.status}` });
+    }
+
+    if (new Date() > request.expiresAt) {
+      request.status = 'expired';
+      await request.save();
+      return res.status(400).json({ error: 'Request expired' });
+    }
+
+    if (action === 'approve') {
+      if (!selectedCredentials || !Array.isArray(selectedCredentials)) {
+        return res.status(400).json({ error: 'selectedCredentials array required for approval' });
+      }
+
+      // Verify credentials belong to user
+      const credentials = await Credential.find({
+        credentialId: { $in: selectedCredentials.map((c: any) => c.credentialId) },
+        subjectId: userId,
+        status: 'ACTIVE',
+      });
+
+      if (credentials.length !== selectedCredentials.length) {
+        return res.status(400).json({ error: 'Some credentials not found or invalid' });
+      }
+
+      request.status = 'approved';
+      request.holderId = userId;
+      request.sharedCredentials = selectedCredentials;
+      request.responseAt = new Date();
+    } else {
+      request.status = 'rejected';
+      request.holderId = userId;
+      request.responseAt = new Date();
+    }
+
+    await request.save();
+
+    logger.info('Verification request responded', { requestId, action, userId });
+
+    res.json({
+      success: true,
+      requestId: request.requestId,
+      status: request.status,
+      message: `Verification request ${action}d successfully`,
+    });
+  } catch (err: any) {
+    const errorId = logger.error('Respond verification error', '/api/credentials/respond-verification', err);
+    res.status(500).json({ error: 'Internal error', errorId });
   }
 });
 
