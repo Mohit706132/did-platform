@@ -77,6 +77,7 @@ router.post('/register', validateSession, requireIssuerRole, async (req: Request
 
     await issuer.save();
 
+    console.log('Issuer registered with organizationName:', issuer.organizationName, 'Type:', typeof issuer.organizationName);
     logger.info('Issuer registered', { userId, organizationName });
 
     res.status(201).json({
@@ -244,12 +245,28 @@ router.get('/pending-requests', validateSession, requireIssuerRole, async (req: 
       return res.status(404).json({ error: 'Issuer profile not found. Please register as issuer first.' });
     }
 
+    console.log('Issuer profile found:', {
+      organizationName: issuerProfile.organizationName,
+      userId: user._id
+    });
+
     // Find all pending requests for this issuer's organization (case-insensitive)
+    // First, let's see all credential requests to debug
+    const allRequests = await CredentialRequest.find({ status: 'pending' });
+    console.log('All pending requests in DB:', allRequests.map(r => ({ 
+      issuerName: r.issuerName, 
+      documentType: r.documentType,
+      userName: r.userName 
+    })));
+
+    // Escape special regex characters in organization name
+    const escapedOrgName = issuerProfile.organizationName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const requests = await CredentialRequest.find({
-      issuerName: { $regex: new RegExp(`^${issuerProfile.organizationName}$`, 'i') },
+      issuerName: { $regex: new RegExp(`^${escapedOrgName}$`, 'i') },
       status: 'pending',
     }).sort({ createdAt: -1 });
 
+    console.log('Filtered requests for', issuerProfile.organizationName, ':', requests.length);
     logger.info('Fetched pending requests', { 
       issuerId: user._id, 
       organizationName: issuerProfile.organizationName, 
@@ -305,38 +322,63 @@ router.post('/approve-request', validateSession, requireIssuerRole, async (req: 
 
     // Create the credential
     const { issueCredential } = require('../issuerService');
+    const { Credential: CredentialModel } = require('../models');
     
-    const credential = await issueCredential({
-      issuerDid: issuerProfile.issuerDid,
+    console.log('Issuing credential with data:', {
       subjectDid: `did:user:${requestUser.email}`,
       claims: credentialData,
-      type: ["VerifiableCredential", `${request.documentType}Credential`],
+      documentType: request.documentType
+    });
+    
+    const vcData = await issueCredential({
+      subjectDid: `did:user:${requestUser.email}`,
+      claims: credentialData,
+      type: [`${request.documentType}Credential`],
       metadata: {
         credentialType: request.documentType,
         purpose: 'identity-verification',
         requestId: request._id.toString(),
+        issuerName: issuerProfile.organizationName,
+        documentType: request.documentType,
       },
     });
+
+    // Save credential to database with proper references
+    const credential = new CredentialModel({
+      credentialId: vcData.id,
+      issuerId: user._id,
+      subjectId: requestUser._id,
+      subjectDid: `did:user:${requestUser.email}`,
+      credentialData: vcData,
+      status: 'ACTIVE',
+      usageCount: 0,
+      maxUsages: 100,
+      issuedAt: new Date(),
+      expiresAt: vcData.expirationDate ? new Date(vcData.expirationDate) : undefined,
+    });
+
+    await credential.save();
 
     // Update request status
     request.status = 'approved';
     request.approvedAt = new Date();
     request.approvedBy = user._id;
-    request.credentialId = credential.credentialId;
+    request.credentialId = vcData.id;
     await request.save();
 
     logger.info('Credential request approved and issued', {
       requestId,
       issuer: issuerProfile.organizationName,
       user: requestUser.email,
+      credentialId: vcData.id,
     });
 
     res.json({
       success: true,
       message: 'Credential issued successfully',
       credential: {
-        credentialId: credential.credentialId,
-        type: credential.credentialData.type,
+        credentialId: vcData.id,
+        type: vcData.type,
         issuedAt: credential.issuedAt,
       },
     });

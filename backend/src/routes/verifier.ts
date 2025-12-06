@@ -236,4 +236,104 @@ router.post('/verify', validateSession, requireVerifierRole, async (req: Request
   }
 });
 
+// POST /api/verifier/verify-credential - Verify a single credential by ID (from QR code)
+router.post('/verify-credential', validateSession, requireVerifierRole, async (req: Request & { session?: ISession }, res: Response) => {
+  try {
+    const { credentialId, holderEmail } = req.body;
+
+    if (!credentialId) {
+      return res.status(400).json({ error: 'credentialId is required' });
+    }
+
+    const userId = req.session!.userId;
+    const verifier = await User.findById(userId);
+    if (!verifier) {
+      return res.status(404).json({ error: 'Verifier not found' });
+    }
+
+    // Find the credential
+    const credential = await Credential.findOne({ credentialId })
+      .populate('subjectId', 'email firstName lastName')
+      .populate('issuerId', 'email firstName lastName');
+
+    if (!credential) {
+      return res.json({
+        success: false,
+        valid: false,
+        message: 'Credential not found in system',
+      });
+    }
+
+    // Verify holder email if provided
+    if (holderEmail && credential.subjectId) {
+      const holder = credential.subjectId as any;
+      if (holder.email !== holderEmail) {
+        return res.json({
+          success: false,
+          valid: false,
+          message: 'Credential holder email mismatch',
+        });
+      }
+    }
+
+    // Check status
+    if (credential.status === 'REVOKED') {
+      return res.json({
+        success: true,
+        valid: false,
+        message: 'Credential has been revoked',
+        credential: {
+          credentialId: credential.credentialId,
+          type: credential.credentialData.type,
+          status: credential.status,
+        },
+      });
+    }
+
+    // Check expiration
+    if (credential.expiresAt && new Date() > credential.expiresAt) {
+      return res.json({
+        success: true,
+        valid: false,
+        message: 'Credential has expired',
+        credential: {
+          credentialId: credential.credentialId,
+          type: credential.credentialData.type,
+          expiresAt: credential.expiresAt,
+        },
+      });
+    }
+
+    const holder = credential.subjectId as any;
+    const issuer = credential.issuerId as any;
+
+    res.json({
+      success: true,
+      valid: true,
+      message: 'Credential is valid',
+      credential: {
+        credentialId: credential.credentialId,
+        type: credential.credentialData.type,
+        status: credential.status,
+        issuedAt: credential.issuedAt,
+        expiresAt: credential.expiresAt,
+        holder: {
+          email: holder?.email,
+          name: `${holder?.firstName} ${holder?.lastName}`,
+        },
+        issuer: {
+          email: issuer?.email,
+          name: `${issuer?.firstName} ${issuer?.lastName}`,
+        },
+        claims: credential.credentialData.credentialSubject,
+      },
+    });
+
+    logger.info('Credential verified', { credentialId, verifierId: userId });
+  } catch (err: any) {
+    const errorId = logger.error('Verify credential error', '/api/verifier/verify-credential', err);
+    res.status(500).json({ error: 'Internal error', errorId });
+  }
+});
+
 export default router;

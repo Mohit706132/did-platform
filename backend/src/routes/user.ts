@@ -40,6 +40,8 @@ router.post('/request-document', validateSession, requireHolderRole, async (req:
       return res.status(400).json({ error: 'documentType and issuerName are required' });
     }
 
+    console.log('Creating document request with issuerName:', issuerName, 'Type:', typeof issuerName);
+
     const request = new CredentialRequest({
       userId: user._id,
       userEmail: user.email,
@@ -53,11 +55,11 @@ router.post('/request-document', validateSession, requireHolderRole, async (req:
 
     await request.save();
     
-    console.log('Document request created:', {
+    console.log('Document request created and saved:', {
       userId: user._id,
       userName: `${user.firstName} ${user.lastName}`,
-      issuerName,
-      documentType,
+      issuerName: request.issuerName,
+      documentType: request.documentType,
       requestId: request._id
     });
 
@@ -107,16 +109,67 @@ router.get('/my-credentials', validateSession, requireHolderRole, async (req: Re
   try {
     const user = (req as any).user;
 
+    // Only fetch credentials that belong to this user
     const credentials = await Credential.find({
-      'credentialData.credentialSubject.id': { $regex: user.email, $options: 'i' },
+      subjectId: user._id,
+      status: 'ACTIVE',
     })
       .sort({ issuedAt: -1 })
+      .populate('issuerId', 'firstName lastName email')
       .lean();
+
+    console.log(`Fetched ${credentials.length} credentials for user ${user.email}`);
 
     res.json({ credentials });
   } catch (error: any) {
     console.error('Error fetching user credentials:', error);
     res.status(500).json({ error: 'Failed to fetch credentials' });
+  }
+});
+
+/**
+ * @route POST /api/user/share-credential
+ * @desc Share a credential with a verifier (generate shareable data for QR code)
+ * @access Holder only
+ */
+router.post('/share-credential', validateSession, requireHolderRole, async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { credentialId, verifierEmail } = req.body;
+
+    if (!credentialId) {
+      return res.status(400).json({ error: 'credentialId is required' });
+    }
+
+    const credential = await Credential.findOne({
+      credentialId,
+      subjectId: user._id,
+    });
+
+    if (!credential) {
+      return res.status(404).json({ error: 'Credential not found or not owned by you' });
+    }
+
+    // Create shareable data (this would be encoded in QR code)
+    const shareData = {
+      credentialId: credential.credentialId,
+      holderDid: credential.subjectDid,
+      holderEmail: user.email,
+      credentialType: credential.credentialData.type,
+      sharedAt: new Date().toISOString(),
+      verifierEmail: verifierEmail || null,
+    };
+
+    console.log('Credential shared:', shareData);
+
+    res.json({
+      success: true,
+      shareData,
+      message: 'Credential share data generated',
+    });
+  } catch (error: any) {
+    console.error('Error sharing credential:', error);
+    res.status(500).json({ error: 'Failed to share credential' });
   }
 });
 
